@@ -47,7 +47,7 @@
 
 ## 4. 需求与研究基线
 
-- [总体设计阶段需求规格说明书 SRS v5.2](Enterprise_AI_Platform_总体设计阶段_需求规格说明书_SRS_v5.md)
+- [总体设计阶段需求规格说明书 SRS V1.0](Enterprise_AI_Platform_总体设计阶段_需求规格说明书_SRS_V1.0.md)
 - [总体设计阶段需求与参考分析](Enterprise_AI_Platform_总体设计阶段_需求与参考分析.md)
 
 ## 5. 架构与实施文档

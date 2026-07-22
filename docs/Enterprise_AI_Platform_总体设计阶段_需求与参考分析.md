@@ -1,6 +1,6 @@
 # Enterprise AI Operating Platform 总体设计与开源项目对标分析
 
-版本：v2.1
+版本：V1.0
 
 状态：Review
 

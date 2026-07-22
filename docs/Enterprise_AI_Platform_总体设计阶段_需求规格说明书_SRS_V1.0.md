@@ -1,6 +1,6 @@
-# Enterprise AI Operating Platform 总体设计阶段需求规格说明书（SRS v5.2）
+# Enterprise AI Operating Platform 总体设计阶段需求规格说明书（SRS V1.0）
 
-版本：v5.2
+版本：V1.0
 
 状态：评审稿（目标态 / Planned）
 
