@@ -26,7 +26,7 @@
 
 1. 一期采用**模块化单体**；逻辑模块不等于独立进程或独立部署服务。
 2. 区分控制面与数据面；区分面向客户端的 API Gateway 与面向模型供应商的 Model Gateway。
-3. Phase 0 即具备 Tenant、OIDC、默认拒绝、PDP/PEP、追加式且可校验的防篡改审计、分布式 Trace、预算和评测能力。
+3. Gate F 先以单企业固定 Tenant、合成身份和权限预过滤验证最小契约；Gate P 前再接入 OIDC、目标 Policy 实现、追加式审计、Trace、预算和正式评测。
 4. 每次 Agent 执行固定 Agent、Prompt、ModelPolicy、ToolBinding、KnowledgePolicy 的不可变版本快照。
 5. 每次 Tool 调用都重新鉴权，策略结果限定为 `Allow`、`Deny`、`RequireApproval`、`RequireStepUpAuth`。
 6. 一期数据基线为 PostgreSQL + pgvector；密钥仅保存引用，不保存明文。
@@ -49,6 +49,7 @@
 
 - [总体设计阶段需求规格说明书 SRS V1.0](Enterprise_AI_Platform_总体设计阶段_需求规格说明书_SRS_V1.0.md)
 - [总体设计阶段需求与参考分析](Enterprise_AI_Platform_总体设计阶段_需求与参考分析.md)
+- [Gate F 可运行 PoC 与命令](../README.md)：本地权限检索、引用与拒答；不代表正式业务试点或生产能力。
 
 ## 5. 架构与实施文档
 
@@ -77,7 +78,7 @@
 | 21 | [首个试点用例与验收基线](21_首个试点用例与验收基线.md) | 推荐试点、用户旅程、范围、数据准备和 Go/Hold/Stop/Retire | Proposed |
 | 22 | [组织责任与RACI运营模型](22_组织责任与RACI运营模型.md) | 唯一 Accountable、职责分离、人工容量和事件升级 | Planned |
 | 23 | [Model Gateway契约设计](23_Model_Gateway契约设计.md) | 模型调用、路由、流式、预算、错误、计量和退出契约 | Planned |
-| 24 | [测试评测与证据追踪计划](24_测试评测与证据追踪计划.md) | 原子验证、AI Eval、威胁测试、证据包和发布门禁 | PartiallyImplemented（仅文档静态门禁） |
+| 24 | [测试评测与证据追踪计划](24_测试评测与证据追踪计划.md) | 原子验证、AI Eval、威胁测试、证据包和发布门禁 | PartiallyImplemented（文档门禁 + Gate F 回归） |
 
 ## 6. 推荐阅读路径
 

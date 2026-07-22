@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <RootNamespace>EnterpriseAI.Poc</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <Content Update="Data\documents.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

@@ -1,15 +1,23 @@
-name: Docs quality
+name: Repository quality
 
 on:
   push:
     paths:
       - "**/*.md"
       - "scripts/Validate-Docs.ps1"
+      - "src/**"
+      - "tests/**"
+      - "global.json"
+      - "Directory.Build.props"
       - ".github/workflows/docs-quality.yml"
   pull_request:
     paths:
       - "**/*.md"
       - "scripts/Validate-Docs.ps1"
+      - "src/**"
+      - "tests/**"
+      - "global.json"
+      - "Directory.Build.props"
       - ".github/workflows/docs-quality.yml"
 
 permissions:
@@ -25,3 +33,20 @@ jobs:
       - name: Run validator regression tests and repository checks
         shell: pwsh
         run: ./scripts/Validate-Docs.ps1 -SelfTest
+
+  gate-f-poc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "8.0.x"
+      - name: Restore
+        run: dotnet restore tests/EnterpriseAI.Poc.Regression/EnterpriseAI.Poc.Regression.csproj
+      - name: Build
+        run: dotnet build tests/EnterpriseAI.Poc.Regression/EnterpriseAI.Poc.Regression.csproj --configuration Release --no-restore
+      - name: Run Gate F regression tests
+        run: dotnet run --project tests/EnterpriseAI.Poc.Regression/EnterpriseAI.Poc.Regression.csproj --configuration Release --no-build

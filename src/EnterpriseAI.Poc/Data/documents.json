@@ -1,0 +1,35 @@
+[
+  {
+    "id": "doc-common-001",
+    "tenantId": "enterprise-internal",
+    "version": "1",
+    "title": "员工信息安全须知",
+    "section": "第 2 节 数据处理",
+    "sourcePath": "fixtures/common/security-guidance.md",
+    "content": "员工不得把公司机密、客户数据或访问令牌输入未批准的外部 AI 服务。",
+    "allowedGroups": ["employees"],
+    "searchTerms": ["信息安全", "公司机密", "访问令牌", "外部 AI"]
+  },
+  {
+    "id": "doc-finance-001",
+    "tenantId": "enterprise-internal",
+    "version": "3",
+    "title": "财务预算与报销规则",
+    "section": "第 4 节 预算报销",
+    "sourcePath": "fixtures/finance/budget-policy.md",
+    "content": "预算内费用须关联成本中心并由对应负责人审批，报销材料应包含合法凭证。",
+    "allowedGroups": ["finance"],
+    "searchTerms": ["预算", "报销", "成本中心", "合法凭证"]
+  },
+  {
+    "id": "doc-hr-001",
+    "tenantId": "enterprise-internal",
+    "version": "2",
+    "title": "新员工入职办理指南",
+    "section": "第 1 节 入职材料",
+    "sourcePath": "fixtures/hr/onboarding-guide.md",
+    "content": "新员工入职前应完成身份材料核验，并由直属部门提交账号与设备申请。",
+    "allowedGroups": ["hr"],
+    "searchTerms": ["入职", "身份材料", "账号", "设备申请"]
+  }
+]

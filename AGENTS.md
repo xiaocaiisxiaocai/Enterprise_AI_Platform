@@ -2,7 +2,7 @@
 
 ## 项目结构与模块组织
 
-本仓库当前是企业 AI 平台的设计文档库，27 个 Markdown 文件均位于 `docs\`，尚无产品 `src\`、产品测试或构建清单。以 `docs\00_Index.md` 为入口；`01_` 至 `13_` 覆盖总体设计与路线规划，`14_` 至 `24_` 覆盖详细领域模型、SDK、运维、ADR、试点验收、组织治理、Model Gateway 和证据追踪。两份 `Enterprise_AI_Platform_*` 文档保存需求基线与参考分析。`scripts\Validate-Docs.ps1` 是文档回归校验器，`.github\workflows\docs-quality.yml` 在 push 和 PR 时执行它。新增主题使用 `NN_主题.md`，并同步更新索引。
+本仓库包含企业 AI 平台目标设计与 Gate F 权限感知检索 PoC。27 个架构 Markdown 文件位于 `docs\`，`README.md` 是运行入口。`src\EnterpriseAI.Poc` 提供 .NET 8 最小 API、本地文档切片和权限预过滤；`tests\EnterpriseAI.Poc.Regression` 是无外部服务的回归执行器。`scripts\Validate-Docs.ps1` 校验文档，`.github\workflows\docs-quality.yml` 在 push 和 PR 时执行文档及 PoC 门禁。新增设计主题使用 `NN_主题.md` 并同步索引。
 
 ## 架构约束
 
@@ -10,16 +10,19 @@
 
 ## 本地检查命令
 
-当前没有可执行工程、测试框架或覆盖率门槛，不要虚构构建与运行结果。提交前可执行：
+提交前执行：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Validate-Docs.ps1 -SelfTest
+dotnet restore .\tests\EnterpriseAI.Poc.Regression\EnterpriseAI.Poc.Regression.csproj
+dotnet build .\tests\EnterpriseAI.Poc.Regression\EnterpriseAI.Poc.Regression.csproj --configuration Release --no-restore
+dotnet run --project .\tests\EnterpriseAI.Poc.Regression\EnterpriseAI.Poc.Regression.csproj --configuration Release --no-build
 Get-ChildItem .\docs -Filter *.md | Sort-Object Name
 rg -n 'TODO|FIXME|TBD|待定' .\docs
 rg -n '^#|^```' .\docs
 ```
 
-首条命令先证明校验器能拒绝损坏样例，再检查标题、围栏、相对链接、JSON、版本和标识一致性；其余命令用于人工盘点。还需人工预览 Markdown 和 Mermaid，并验证 YAML 示例语义。引入首个产品代码模块时，应同时补充真实的构建、测试和格式化命令。
+文档脚本先证明校验器能拒绝损坏样例，再检查标题、围栏、相对链接、JSON、版本和标识一致性。PoC 构建启用警告即错误；回归执行器验证身份、部门 ACL、固定 Tenant、拒答、引用和真实 HTTP 绑定。还需人工预览 Markdown/Mermaid 并验证 YAML 语义。
 
 ## 编写风格与命名
 
@@ -27,7 +30,7 @@ rg -n '^#|^```' .\docs
 
 ## 验证要求
 
-文档变更必须检查术语、链接和跨文档一致性。需求变更回写 SRS；API 或实体变更联动服务边界、数据库模型和接口设计；高风险动作必须保留审批、最小权限和审计路径。单元测试、集成测试、AI Evaluation 与安全扫描属于实现阶段门禁，目前不能视为已执行。
+文档变更必须检查术语、链接和跨文档一致性。需求变更回写 SRS；API 或实体变更联动服务边界、数据库模型和接口设计。Gate F 的 `REG-*` 回归只证明本地确定性契约，不得描述为真实 IdP、SharePoint、向量检索、AI Evaluation 或生产安全证据。发现缺陷时先增加或强化回归场景，再修复实现。
 
 ## Commit 与 Pull Request
 
