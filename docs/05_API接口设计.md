@@ -183,7 +183,7 @@ SSE 每条事件含 `event_id`、`sequence`、`type`、`occurred_at`、`trace_id
 
 ### 8.1 Gate F 本地 PoC（非规范接口）
 
-`src\EnterpriseAI.Poc` 暂时暴露 `POST /api/v1/query`，只用于本地回归。请求体仅包含 `question`，测试身份来自 `X-Poc-User`；Tenant 固定为企业安全域，任何请求体 `tenantId` 都返回 `400`。响应只返回权限过滤后的抽取式证据、固定版本/位置引用或统一拒答。
+`src\EnterpriseAI.Poc` 暂时暴露 `POST /api/v1/query`，只用于本地回归。请求体仅包含 `question`，测试身份来自 `X-Poc-User`；Tenant 固定为企业安全域，任何请求体 `tenantId` 都返回 `400`。响应只返回权限过滤后的抽取式证据、固定版本/位置引用或统一拒答。测试身份开关只允许在 Development 生效，其他环境默认返回 `401`，Production 显式启用时应用拒绝启动。
 
 该端点不属于目标生产契约，不支持真实认证、向量检索、模型生成或业务 SLA。Gate P 必须迁移到本节后续定义的 Knowledge API 和受信身份上下文，禁止保留 `X-Poc-User`。
 

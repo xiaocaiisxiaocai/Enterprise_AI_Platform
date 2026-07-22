@@ -5,8 +5,8 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\EnterpriseAI.Poc\EnterpriseAI.Poc.csproj" />
-    <Content Include="..\..\src\EnterpriseAI.Poc\Data\documents.json"
-             Link="Data\documents.json"
+    <Content Include="..\..\src\EnterpriseAI.Poc\Data\**\*"
+             Link="Data\%(RecursiveDir)%(Filename)%(Extension)"
              CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

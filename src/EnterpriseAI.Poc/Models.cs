@@ -28,6 +28,24 @@ public sealed record DocumentRecord(
     string[] AllowedGroups,
     string[] SearchTerms);
 
+public sealed record ApprovedSourceManifest(
+    string SourceId,
+    string TenantId,
+    string Owner,
+    string Classification,
+    string[] ApprovedFor,
+    ApprovedSourceDocument[] Documents);
+
+public sealed record ApprovedSourceDocument(
+    string Id,
+    string RelativePath,
+    string Version,
+    string Title,
+    string Section,
+    string[] AllowedGroups,
+    string[] SearchTerms,
+    string Sha256);
+
 public sealed class PocIdentity
 {
     public PocIdentity(string principalId, string tenantId, IEnumerable<string> groups)

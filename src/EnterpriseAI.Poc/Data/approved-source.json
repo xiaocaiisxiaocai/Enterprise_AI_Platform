@@ -1,0 +1,39 @@
+{
+  "sourceId": "gate-f-approved-snapshot",
+  "tenantId": "enterprise-internal",
+  "owner": "gate-f-fixture-owner",
+  "classification": "synthetic",
+  "approvedFor": ["gate-f"],
+  "documents": [
+    {
+      "id": "doc-common-001",
+      "relativePath": "fixtures/common/security-guidance.txt",
+      "version": "1",
+      "title": "员工信息安全须知",
+      "section": "第 2 节 数据处理",
+      "allowedGroups": ["employees"],
+      "searchTerms": ["信息安全", "公司机密", "访问令牌", "外部 AI"],
+      "sha256": "78296752224031dc5c0b08dd5de27532a56d7617a1540c26cef2415f433d39a9"
+    },
+    {
+      "id": "doc-finance-001",
+      "relativePath": "fixtures/finance/budget-policy.txt",
+      "version": "3",
+      "title": "财务预算与报销规则",
+      "section": "第 4 节 预算报销",
+      "allowedGroups": ["finance"],
+      "searchTerms": ["预算", "报销", "成本中心", "合法凭证"],
+      "sha256": "d153790bb0e1eb1b33ac581d0b86f97b788d9bf00a89044b6a097c7db0d1b122"
+    },
+    {
+      "id": "doc-hr-001",
+      "relativePath": "fixtures/hr/onboarding-guide.txt",
+      "version": "2",
+      "title": "新员工入职办理指南",
+      "section": "第 1 节 入职材料",
+      "allowedGroups": ["hr"],
+      "searchTerms": ["入职", "身份材料", "账号", "设备申请"],
+      "sha256": "aba452d1c91e75e0717cd3e4cfe2d4cf03bbe2e6225d0e1111b6bd1c3c9cf837"
+    }
+  ]
+}

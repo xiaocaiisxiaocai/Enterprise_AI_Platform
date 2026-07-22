@@ -2,7 +2,7 @@
 
 ## 项目结构与模块组织
 
-本仓库包含企业 AI 平台目标设计与 Gate F 权限感知检索 PoC。27 个架构 Markdown 文件位于 `docs\`，`README.md` 是运行入口。`src\EnterpriseAI.Poc` 提供 .NET 8 最小 API、本地文档切片和权限预过滤；`tests\EnterpriseAI.Poc.Regression` 是无外部服务的回归执行器。`scripts\Validate-Docs.ps1` 校验文档，`.github\workflows\docs-quality.yml` 在 push 和 PR 时执行文档及 PoC 门禁。新增设计主题使用 `NN_主题.md` 并同步索引。
+本仓库包含企业 AI 平台目标设计与 Gate F 权限感知检索 PoC。27 个架构 Markdown 文件位于 `docs\`，`README.md` 是运行入口。`src\EnterpriseAI.Poc` 提供 .NET 8 最小 API、批准快照清单、合成来源文件和权限预过滤；`tests\EnterpriseAI.Poc.Regression` 是无外部服务的回归执行器。`scripts\Validate-Docs.ps1` 校验文档，`.github\workflows\docs-quality.yml` 在 push 和 PR 时执行文档及 PoC 门禁。新增设计主题使用 `NN_主题.md` 并同步索引。
 
 ## 架构约束
 
@@ -30,7 +30,7 @@ rg -n '^#|^```' .\docs
 
 ## 验证要求
 
-文档变更必须检查术语、链接和跨文档一致性。需求变更回写 SRS；API 或实体变更联动服务边界、数据库模型和接口设计。Gate F 的 `REG-*` 回归只证明本地确定性契约，不得描述为真实 IdP、SharePoint、向量检索、AI Evaluation 或生产安全证据。发现缺陷时先增加或强化回归场景，再修复实现。
+文档变更必须检查术语、链接和跨文档一致性。需求变更回写 SRS；API 或实体变更联动服务边界、数据库模型和接口设计。修改 `Data\fixtures` 时必须同步更新 `approved-source.json` 的 SHA-256、ACL 和版本，并运行全部回归。Gate F 的 `REG-*` 回归只证明本地确定性契约，不得描述为真实 IdP、SharePoint、向量检索、AI Evaluation 或生产安全证据。发现缺陷时先增加或强化回归场景，再修复实现。
 
 ## Commit 与 Pull Request
 

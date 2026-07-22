@@ -4,16 +4,32 @@ namespace EnterpriseAI.Poc;
 
 public static class PocApplication
 {
-    public static WebApplication Build(string[] args, DocumentRepository? repository = null)
+    public static WebApplication Build(
+        string[] args,
+        DocumentRepository? repository = null,
+        string? environmentName = null)
     {
-        var builder = WebApplication.CreateBuilder(args);
+        var options = string.IsNullOrWhiteSpace(environmentName)
+            ? new WebApplicationOptions { Args = args }
+            : new WebApplicationOptions { Args = args, EnvironmentName = environmentName };
+
+        var builder = WebApplication.CreateBuilder(options);
+        var pocIdentityEnabled = bool.TryParse(
+            builder.Configuration["GateF:PocIdentityEnabled"],
+            out var configuredIdentityEnabled) && configuredIdentityEnabled;
+        if (pocIdentityEnabled && !builder.Environment.IsDevelopment())
+        {
+            throw new InvalidOperationException(
+                "X-Poc-User 测试身份只能在 Development 环境启用。");
+        }
+
         builder.Services.ConfigureHttpJsonOptions(options =>
         {
             options.SerializerOptions.UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow;
         });
         builder.Services.AddSingleton<PocIdentityDirectory>();
-        builder.Services.AddSingleton(repository ?? DocumentRepository.Load(
-            Path.Combine(builder.Environment.ContentRootPath, "Data", "documents.json")));
+        builder.Services.AddSingleton(repository ?? DocumentRepository.LoadApprovedSnapshot(
+            Path.Combine(builder.Environment.ContentRootPath, "Data", "approved-source.json")));
         builder.Services.AddSingleton<PermissionAwareSearchService>();
 
         var application = builder.Build();
@@ -26,7 +42,8 @@ public static class PocApplication
             PocIdentityDirectory identities,
             PermissionAwareSearchService search) =>
         {
-            if (!httpRequest.Headers.TryGetValue("X-Poc-User", out var userHeader) ||
+            if (!pocIdentityEnabled ||
+                !httpRequest.Headers.TryGetValue("X-Poc-User", out var userHeader) ||
                 !identities.TryResolve(userHeader.ToString(), out var identity))
             {
                 return TypedResults.Unauthorized();

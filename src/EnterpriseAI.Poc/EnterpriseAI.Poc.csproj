@@ -3,6 +3,6 @@
     <RootNamespace>EnterpriseAI.Poc</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
-    <Content Update="Data\documents.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Update="Data\**\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

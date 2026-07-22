@@ -4,9 +4,12 @@ using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.Extensions.DependencyInjection;
 using System.Net;
 using System.Net.Http.Json;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 
-var dataPath = Path.Combine(AppContext.BaseDirectory, "Data", "documents.json");
-var repository = DocumentRepository.Load(dataPath);
+var dataPath = Path.Combine(AppContext.BaseDirectory, "Data", "approved-source.json");
+var repository = DocumentRepository.LoadApprovedSnapshot(dataPath);
 var identities = new PocIdentityDirectory();
 var search = new PermissionAwareSearchService(repository);
 var failures = new List<string>();
@@ -66,9 +69,66 @@ Run("REG-CITE-001 引用包含固定版本和位置", () =>
     AssertFalse(string.IsNullOrWhiteSpace(citation.SourcePath), "引用缺少来源路径");
 });
 
+Run("REG-SRC-001 批准快照加载来源文件与 ACL", () =>
+{
+    AssertEqual(3, repository.Documents.Count, "批准快照文档数不正确");
+    var financeDocument = repository.Documents.Single(document => document.Id == "doc-finance-001");
+    AssertTrue(financeDocument.AllowedGroups.Contains("finance"), "财务文档缺少来源 ACL");
+    AssertTrue(financeDocument.Content.Contains("成本中心", StringComparison.Ordinal), "未从来源文件加载内容");
+});
+
+Run("REG-SRC-002 来源文件被篡改时拒绝启动", () =>
+{
+    WithTemporarySnapshot(
+        fileContent: "已被篡改的内容",
+        relativePath: "fixtures/document.md",
+        allowedGroups: ["employees"],
+        approvedHash: ComputeSha256("批准内容"),
+        manifestPath => ExpectThrows<InvalidDataException>(
+            () => DocumentRepository.LoadApprovedSnapshot(manifestPath),
+            "篡改内容通过了 SHA-256 校验"));
+});
+
+Run("REG-SRC-003 来源路径越界时拒绝启动", () =>
+{
+    WithTemporarySnapshot(
+        fileContent: "批准内容",
+        relativePath: "../outside.md",
+        allowedGroups: ["employees"],
+        approvedHash: ComputeSha256("批准内容"),
+        manifestPath => ExpectThrows<InvalidDataException>(
+            () => DocumentRepository.LoadApprovedSnapshot(manifestPath),
+            "路径穿越未被拒绝"));
+});
+
+Run("REG-SRC-004 来源文档缺少 ACL 时拒绝启动", () =>
+{
+    WithTemporarySnapshot(
+        fileContent: "批准内容",
+        relativePath: "fixtures/document.md",
+        allowedGroups: [],
+        approvedHash: ComputeSha256("批准内容"),
+        manifestPath => ExpectThrows<InvalidDataException>(
+            () => DocumentRepository.LoadApprovedSnapshot(manifestPath),
+            "缺失 ACL 的来源文档被接受"));
+});
+
+Run("REG-AUTH-002 Production 环境禁止启用测试身份", () =>
+{
+    ExpectThrows<InvalidOperationException>(
+        () => PocApplication.Build(
+            ["--GateF:PocIdentityEnabled=true"],
+            repository,
+            "Production"),
+        "Production 环境启用了 X-Poc-User");
+});
+
 await RunAsync("REG-API-001 HTTP 契约执行身份、ACL 与输入边界", async () =>
 {
-    await using var application = PocApplication.Build([], repository);
+    await using var application = PocApplication.Build(
+        ["--GateF:PocIdentityEnabled=true"],
+        repository,
+        "Development");
     application.Urls.Add("http://127.0.0.1:0");
     await application.StartAsync();
 
@@ -117,6 +177,28 @@ await RunAsync("REG-API-001 HTTP 契约执行身份、ACL 与输入边界", asyn
     tenantInjection.Headers.Add("X-Poc-User", "alice-finance");
     using var tenantInjectionResponse = await client.SendAsync(tenantInjection);
     AssertEqual(HttpStatusCode.BadRequest, tenantInjectionResponse.StatusCode, "客户端 Tenant 注入未被拒绝");
+
+    await using var productionApplication = PocApplication.Build([], repository, "Production");
+    productionApplication.Urls.Add("http://127.0.0.1:0");
+    await productionApplication.StartAsync();
+    var productionAddresses = productionApplication.Services
+        .GetRequiredService<IServer>()
+        .Features
+        .Get<IServerAddressesFeature>()?
+        .Addresses;
+    var productionAddress = productionAddresses?.SingleOrDefault()
+        ?? throw new InvalidOperationException("Production 测试 API 未获得监听地址");
+    using var productionClient = new HttpClient { BaseAddress = new Uri(productionAddress) };
+    using var productionRequest = new HttpRequestMessage(HttpMethod.Post, "/api/v1/query")
+    {
+        Content = JsonContent.Create(new QueryRequest("预算报销规则是什么"))
+    };
+    productionRequest.Headers.Add("X-Poc-User", "alice-finance");
+    using var productionResponse = await productionClient.SendAsync(productionRequest);
+    AssertEqual(
+        HttpStatusCode.Unauthorized,
+        productionResponse.StatusCode,
+        "Production 默认配置接受了 X-Poc-User");
 });
 
 if (failures.Count > 0)
@@ -130,7 +212,7 @@ if (failures.Count > 0)
     return 1;
 }
 
-Console.WriteLine("REGRESSION_TESTS=PASS count=8");
+Console.WriteLine("REGRESSION_TESTS=PASS count=13");
 return 0;
 
 void Run(string name, Action test)
@@ -194,4 +276,85 @@ static void AssertFalse(bool actual, string message)
     {
         throw new InvalidOperationException(message);
     }
+}
+
+static void AssertTrue(bool actual, string message)
+{
+    if (!actual)
+    {
+        throw new InvalidOperationException(message);
+    }
+}
+
+static void ExpectThrows<TException>(Action action, string message)
+    where TException : Exception
+{
+    try
+    {
+        action();
+    }
+    catch (TException)
+    {
+        return;
+    }
+
+    throw new InvalidOperationException(message);
+}
+
+static void WithTemporarySnapshot(
+    string fileContent,
+    string relativePath,
+    string[] allowedGroups,
+    string approvedHash,
+    Action<string> test)
+{
+    var regressionRoot = Path.Combine(
+        Path.GetTempPath(),
+        "enterprise-ai-poc-regression",
+        Guid.NewGuid().ToString("N"));
+    var fixtureDirectory = Path.Combine(regressionRoot, "fixtures");
+    Directory.CreateDirectory(fixtureDirectory);
+    File.WriteAllText(Path.Combine(fixtureDirectory, "document.md"), fileContent, new UTF8Encoding(false));
+
+    var manifest = new ApprovedSourceManifest(
+        "regression-snapshot",
+        PocIdentityDirectory.EnterpriseTenantId,
+        "regression-owner",
+        "synthetic",
+        ["gate-f"],
+        [new ApprovedSourceDocument(
+            "regression-document",
+            relativePath,
+            "1",
+            "回归文档",
+            "测试节",
+            allowedGroups,
+            ["批准内容"],
+            approvedHash)]);
+    var manifestPath = Path.Combine(regressionRoot, "approved-source.json");
+    File.WriteAllText(
+        manifestPath,
+        JsonSerializer.Serialize(manifest),
+        new UTF8Encoding(false));
+
+    try
+    {
+        test(manifestPath);
+    }
+    finally
+    {
+        var expectedParent = Path.GetFullPath(Path.Combine(
+            Path.GetTempPath(),
+            "enterprise-ai-poc-regression")) + Path.DirectorySeparatorChar;
+        var resolvedRoot = Path.GetFullPath(regressionRoot);
+        if (resolvedRoot.StartsWith(expectedParent, StringComparison.OrdinalIgnoreCase))
+        {
+            Directory.Delete(resolvedRoot, recursive: true);
+        }
+    }
+}
+
+static string ComputeSha256(string content)
+{
+    return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content))).ToLowerInvariant();
 }
