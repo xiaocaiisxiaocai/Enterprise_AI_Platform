@@ -1,0 +1,27 @@
+name: Docs quality
+
+on:
+  push:
+    paths:
+      - "**/*.md"
+      - "scripts/Validate-Docs.ps1"
+      - ".github/workflows/docs-quality.yml"
+  pull_request:
+    paths:
+      - "**/*.md"
+      - "scripts/Validate-Docs.ps1"
+      - ".github/workflows/docs-quality.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate-docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Run validator regression tests and repository checks
+        shell: pwsh
+        run: ./scripts/Validate-Docs.ps1 -SelfTest

@@ -2,7 +2,7 @@
 
 ## 项目结构与模块组织
 
-本仓库当前是企业 AI 平台的设计文档库，27 个 Markdown 文件均位于 `docs\`，尚无 `src\`、`tests\`、独立静态资源或构建清单。以 `docs\00_Index.md` 为入口；`01_` 至 `13_` 覆盖总体设计与路线规划，`14_` 至 `24_` 覆盖详细领域模型、SDK、运维、ADR、试点验收、组织治理、Model Gateway 和证据追踪。两份 `Enterprise_AI_Platform_*` 文档保存需求基线与参考分析。新增主题使用 `NN_主题.md`，并同步更新索引。
+本仓库当前是企业 AI 平台的设计文档库，27 个 Markdown 文件均位于 `docs\`，尚无产品 `src\`、产品测试或构建清单。以 `docs\00_Index.md` 为入口；`01_` 至 `13_` 覆盖总体设计与路线规划，`14_` 至 `24_` 覆盖详细领域模型、SDK、运维、ADR、试点验收、组织治理、Model Gateway 和证据追踪。两份 `Enterprise_AI_Platform_*` 文档保存需求基线与参考分析。`scripts\Validate-Docs.ps1` 是文档回归校验器，`.github\workflows\docs-quality.yml` 在 push 和 PR 时执行它。新增主题使用 `NN_主题.md`，并同步更新索引。
 
 ## 架构约束
 
@@ -13,12 +13,13 @@
 当前没有可执行工程、测试框架或覆盖率门槛，不要虚构构建与运行结果。提交前可执行：
 
 ```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Validate-Docs.ps1 -SelfTest
 Get-ChildItem .\docs -Filter *.md | Sort-Object Name
 rg -n 'TODO|FIXME|TBD|待定' .\docs
 rg -n '^#|^```' .\docs
 ```
 
-这些命令分别检查文档清单、未决项、标题与代码围栏。还需人工预览 Markdown 和 Mermaid，并验证 JSON、YAML 示例语法。引入首个代码模块时，应同时补充真实的构建、测试和格式化命令。
+首条命令先证明校验器能拒绝损坏样例，再检查标题、围栏、相对链接、JSON、版本和标识一致性；其余命令用于人工盘点。还需人工预览 Markdown 和 Mermaid，并验证 YAML 示例语义。引入首个产品代码模块时，应同时补充真实的构建、测试和格式化命令。
 
 ## 编写风格与命名
 
