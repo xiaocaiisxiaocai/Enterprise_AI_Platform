@@ -43,7 +43,7 @@ flowchart LR
 
 ### 3.2 Gate F 本地确定性基线
 
-当前 `evaluation\gate-f-golden-v1.json` 是合成、版本化的本地契约集，不是业务专家批准的正式 Golden Dataset。12 个用例覆盖财务/HR 正向检索、公共知识、跨部门与无证据拒答，以及同时包含授权/未授权主题的混合问题。`tests\EnterpriseAI.Poc.Evaluation` 固定执行以下硬门禁：全部 Case 通过、未授权引用为 0、引用集合精确匹配率为 1、拒答一致率为 1；内置故意错误预期证明评测器能够失败。`REG-EVAL-*`（`GoldenDatasetContractRegression` 与 `--self-test`）覆盖损坏数据集的契约拒绝：重复 Case ID、未知主体、错误 Tenant、非法状态、空问题、非法文档 ID、引用重叠、状态与引用不一致、复用 Trace 路径；损坏样例必须非零退出且不得伪造 Passed 报告。报告绑定数据集、快照、Policy 和 Trace 最终哈希，不保存问题原文。
+当前 `evaluation\gate-f-golden-v1.json` 是合成、版本化的本地契约集，不是业务专家批准的正式 Golden Dataset。12 个用例覆盖财务/HR 正向检索、公共知识、跨部门与无证据拒答，以及同时包含授权/未授权主题的混合问题。`tests\EnterpriseAI.Poc.Evaluation` 固定执行以下硬门禁：全部 Case 通过、未授权引用为 0、引用集合精确匹配率为 1、拒答一致率为 1；内置故意错误预期证明评测器能够失败。`REG-EVAL-001`–`REG-EVAL-015`（`GoldenDatasetContractRegression` 与 `--self-test`）覆盖损坏数据集的契约拒绝：重复 Case ID、未知主体、错误 Tenant、非法状态、空问题、重复/空白/不存在文档 ID、期望与禁止引用重叠、回答缺引用、拒答含引用、复用 Trace 路径、正常 12/12 通过；`REG-EVAL-014`/`015` 以独立进程调用评测入口，断言损坏样例稳定非零退出码且不得生成伪造 Passed 报告。报告绑定数据集、快照、Policy 和 Trace 最终哈希，不保存问题原文。
 
 这些数值是对有限合成数据集的精确契约，不是质量目标、统计估计或已批准 EvalPolicy。它不测量语义正确性、Groundedness、模型安全、延迟、成本、真实分布或业务价值，不能关闭 `TBD-EVAL-001`。
 

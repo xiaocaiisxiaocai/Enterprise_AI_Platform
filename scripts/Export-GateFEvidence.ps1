@@ -167,7 +167,55 @@ function Invoke-ExportAtomicitySelfTest {
         }
         Write-Host "SELF_TEST_CASE=PASS name=incomplete-staging-rejected"
 
-        Write-Host "SELF_TEST=PASS (atomic publish, failure preserve, invalid path, incomplete staging)"
+        # 5) 模拟评测失败：暂存中写入不完整评测输出后失败清理，正式证据保持上一次完整版
+        $stagingEvalFail = New-GateFStagingDirectory -OutputDirectory $outputDirectory
+        $evalFailReport = Join-Path $stagingEvalFail "gate-f-evaluation.json"
+        $evalFailTrace = Join-Path $stagingEvalFail "gate-f-evaluation-traces-eval-fail.jsonl"
+        $evalFailEvidence = Join-Path $stagingEvalFail "gate-f-evidence.json"
+        [IO.File]::WriteAllText($evalFailReport, '{"status":"FailedLocalDeterministicEvaluation","incomplete":true}', [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($evalFailTrace, '{"sequence":1,"broken":true}', [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($evalFailEvidence, '{"status":"INCOMPLETE_EVAL"}', [Text.UTF8Encoding]::new($false))
+        # 模拟评测失败：不 Publish，只清理暂存
+        Remove-GateFStagingDirectory -StagingPath $stagingEvalFail -OutputDirectory $outputDirectory
+        if (Test-Path -LiteralPath $stagingEvalFail) {
+            throw "评测失败后暂存目录残留"
+        }
+        if ((Get-Content -LiteralPath $finalEvidence -Raw) -notmatch 'fresh') {
+            throw "评测失败路径破坏了上一次完整证据包"
+        }
+        if (Test-Path -LiteralPath (Join-Path $outputDirectory 'gate-f-evaluation.json')) {
+            $officialReport = Get-Content -LiteralPath (Join-Path $outputDirectory 'gate-f-evaluation.json') -Raw
+            if ($officialReport -match 'FailedLocalDeterministicEvaluation' -and $officialReport -match 'incomplete') {
+                throw "评测失败后正式目录留下了不完整评测报告"
+            }
+        }
+        Write-Host "SELF_TEST_CASE=PASS name=evaluation-failure-preserves-previous"
+
+        # 6) 模拟文档门禁失败：同样只清暂存，不发布
+        $stagingDocsFail = New-GateFStagingDirectory -OutputDirectory $outputDirectory
+        [IO.File]::WriteAllText((Join-Path $stagingDocsFail "gate-f-evidence.json"), '{"status":"INCOMPLETE_DOCS"}', [Text.UTF8Encoding]::new($false))
+        Remove-GateFStagingDirectory -StagingPath $stagingDocsFail -OutputDirectory $outputDirectory
+        if (Test-Path -LiteralPath $stagingDocsFail) {
+            throw "文档失败后暂存目录残留"
+        }
+        if ((Get-Content -LiteralPath $finalEvidence -Raw) -notmatch 'fresh') {
+            throw "文档失败路径破坏了上一次完整证据包"
+        }
+        Write-Host "SELF_TEST_CASE=PASS name=docs-failure-preserves-previous"
+
+        # 7) 正式证据文件在失败前不存在时，失败后仍不存在（非“看似正式但残缺”）
+        $cleanArtifacts = Join-Path $fixtureRoot "artifacts-clean"
+        New-Item -ItemType Directory -Path $cleanArtifacts -Force | Out-Null
+        $cleanFinal = Join-Path $cleanArtifacts "gate-f-evidence.json"
+        $stagingCleanFail = New-GateFStagingDirectory -OutputDirectory $cleanArtifacts
+        [IO.File]::WriteAllText((Join-Path $stagingCleanFail "gate-f-evidence.json"), '{"status":"INCOMPLETE_FIRST_RUN"}', [Text.UTF8Encoding]::new($false))
+        Remove-GateFStagingDirectory -StagingPath $stagingCleanFail -OutputDirectory $cleanArtifacts
+        if (Test-Path -LiteralPath $cleanFinal) {
+            throw "首次失败后留下了正式证据文件"
+        }
+        Write-Host "SELF_TEST_CASE=PASS name=first-failure-leaves-no-official-evidence"
+
+        Write-Host "SELF_TEST=PASS (atomic publish; evaluation/docs/invalid-path failures preserve or omit official evidence)"
     }
     finally {
         $resolved = [IO.Path]::GetFullPath($fixtureRoot)
@@ -289,10 +337,10 @@ try {
         }
     })
     $regressionSummary = $regressionOutput | Where-Object {
-        $_.ToString() -match '^REGRESSION_TESTS=PASS count=57$'
+        $_.ToString() -match '^REGRESSION_TESTS=PASS count=63$'
     }
-    if ($testIds.Count -ne 57 -or $null -eq $regressionSummary) {
-        throw "回归输出与 57 条 Gate F 契约不一致。"
+    if ($testIds.Count -ne 63 -or $null -eq $regressionSummary) {
+        throw "回归输出与 63 条 Gate F 契约不一致。"
     }
 
     $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json

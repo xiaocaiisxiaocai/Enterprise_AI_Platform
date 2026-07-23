@@ -704,8 +704,124 @@ await RunAsync("REG-API-010 并发请求保持 ACL 与 Trace 无问题原文", a
     }
 });
 
+Run("REG-TRACE-012 Trace 未授权字段注入检测", () =>
+{
+    WithTemporaryTraceFile(path =>
+    {
+        var sink = new HashChainedJsonLineTraceSink(path);
+        sink.Record(CreateTraceRecord(1));
+        var line = File.ReadAllText(path).TrimEnd();
+        var tampered = line.Replace(
+            "\"citationCount\":1",
+            "\"citationCount\":1,\"answer\":\"LEAKED_ANSWER\",\"question\":\"LEAKED_QUESTION\"",
+            StringComparison.Ordinal);
+        File.WriteAllText(path, tampered + Environment.NewLine, new UTF8Encoding(false));
+        ExpectThrows<InvalidDataException>(
+            () => HashChainedJsonLineTraceSink.Validate(path),
+            "未授权 Trace 字段通过白名单校验");
+    });
+});
+
+Run("REG-TRACE-013 Trace entryHash 被改写时检测", () =>
+{
+    WithTemporaryTraceFile(path =>
+    {
+        var sink = new HashChainedJsonLineTraceSink(path);
+        sink.Record(CreateTraceRecord(1));
+        sink.Record(CreateTraceRecord(2));
+        var lines = File.ReadAllLines(path);
+        var forgedHash = new string('f', 64);
+        var tampered = System.Text.RegularExpressions.Regex.Replace(
+            lines[1],
+            "\"entryHash\":\"[0-9a-f]{64}\"",
+            $"\"entryHash\":\"{forgedHash}\"");
+        File.WriteAllLines(path, [lines[0], tampered], new UTF8Encoding(false));
+        ExpectThrows<InvalidDataException>(
+            () => HashChainedJsonLineTraceSink.Validate(path),
+            "entryHash 改写后仍通过校验");
+    });
+});
+
+Run("REG-SRC-016 大小写/规范化路径冲突被拒绝", () =>
+{
+    if (!OperatingSystem.IsWindows())
+    {
+        // 非 Windows 上大小写敏感，改用 ./ 与重复相对路径的等价冲突（已由 REG-SRC-012 覆盖）。
+        // 仍执行一次大小写无关的重复文档 ID 路径规范化探测：同一路径两种写法。
+        WithTemporaryMultiPathSnapshot(
+            fileContent: "批准内容",
+            relativePaths: ["fixtures/document.md", "fixtures\\document.md"],
+            allowedGroups: ["employees"],
+            approvedHash: ComputeSha256("批准内容"),
+            manifestPath => ExpectThrows<InvalidDataException>(
+                () => DocumentRepository.LoadApprovedSnapshot(manifestPath),
+                "路径分隔符规范化冲突被接受"));
+        return;
+    }
+
+    WithTemporaryMultiPathSnapshot(
+        fileContent: "批准内容",
+        relativePaths: ["fixtures/document.md", "Fixtures/Document.md"],
+        allowedGroups: ["employees"],
+        approvedHash: ComputeSha256("批准内容"),
+        manifestPath => ExpectThrows<InvalidDataException>(
+            () => DocumentRepository.LoadApprovedSnapshot(manifestPath),
+            "大小写路径冲突被接受"));
+});
+
+Run("REG-SRC-017 重复 Document ID 被拒绝", () =>
+{
+    WithTemporaryMultiPathSnapshot(
+        fileContent: "批准内容",
+        relativePaths: ["fixtures/document.md", "fixtures/other.md"],
+        allowedGroups: ["employees"],
+        approvedHash: ComputeSha256("批准内容"),
+        manifestPath =>
+        {
+            // 写入第二个文件内容，但强制两个 entry 使用同一 Document ID。
+            var root = Path.GetDirectoryName(manifestPath)!;
+            Directory.CreateDirectory(Path.Combine(root, "fixtures"));
+            File.WriteAllText(Path.Combine(root, "fixtures", "other.md"), "批准内容", new UTF8Encoding(false));
+            var hash = ComputeSha256("批准内容");
+            var manifest = new ApprovedSourceManifest(
+                "regression-snapshot",
+                PocIdentityDirectory.EnterpriseTenantId,
+                "regression-owner",
+                "synthetic",
+                ["gate-f"],
+                [
+                    new ApprovedSourceDocument(
+                        "duplicate-id",
+                        "fixtures/document.md",
+                        "1",
+                        "文档A",
+                        "节",
+                        ["employees"],
+                        ["批准内容"],
+                        hash),
+                    new ApprovedSourceDocument(
+                        "duplicate-id",
+                        "fixtures/other.md",
+                        "1",
+                        "文档B",
+                        "节",
+                        ["employees"],
+                        ["批准内容"],
+                        hash)
+                ]);
+            File.WriteAllText(manifestPath, JsonSerializer.Serialize(manifest), new UTF8Encoding(false));
+            ExpectThrows<InvalidDataException>(
+                () => DocumentRepository.LoadApprovedSnapshot(manifestPath),
+                "重复 Document ID 被接受");
+        });
+});
+
 var goldenDatasetPath = ResolveGoldenDatasetPath();
-foreach (var (id, name, test) in GoldenDatasetContractRegression.BuildCases(repository, goldenDatasetPath))
+var approvedManifestForEval = Path.Combine(AppContext.BaseDirectory, "Data", "approved-source.json");
+foreach (var (id, name, test) in GoldenDatasetContractRegression.BuildCases(
+             repository,
+             goldenDatasetPath,
+             approvedManifestForEval))
 {
     Run($"{id} {name}", test);
 }
@@ -721,12 +837,17 @@ if (failures.Count > 0)
     return 1;
 }
 
-const int ExpectedRegressionCount = 57;
+const int ExpectedRegressionCount = 63;
 Console.WriteLine($"REGRESSION_TESTS=PASS count={ExpectedRegressionCount}");
+var commitSha = TryReadGitCommit();
 Console.WriteLine(
     "GATE_F_SUMMARY " +
+    $"commit={commitSha} " +
     $"regression_count={ExpectedRegressionCount} " +
-    "scope=local-deterministic-contract " +
+    "golden_cases=n/a-in-regression-runner " +
+    "unauthorized_citations=n/a-in-regression-runner " +
+    "dataset_sha256=n/a-in-regression-runner " +
+    "trace_final_hash=n/a-in-regression-runner " +
     "limitations=no-oidc;no-sharepoint;no-probabilistic-ai-eval;expected-4xx-are-asserted-boundaries");
 return 0;
 
@@ -1029,6 +1150,35 @@ static string ResolveGoldenDatasetPath()
     }
 
     throw new FileNotFoundException("未找到 evaluation\\gate-f-golden-v1.json。");
+}
+
+static string TryReadGitCommit()
+{
+    try
+    {
+        var startInfo = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = "git",
+            Arguments = "rev-parse HEAD",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        using var process = System.Diagnostics.Process.Start(startInfo);
+        if (process is null)
+        {
+            return "unavailable";
+        }
+
+        var output = process.StandardOutput.ReadToEnd().Trim();
+        process.WaitForExit(10_000);
+        return process.ExitCode == 0 && !string.IsNullOrWhiteSpace(output) ? output : "unavailable";
+    }
+    catch
+    {
+        return "unavailable";
+    }
 }
 
 static HttpRequestMessage CreateQueryRequest(string user, string question)

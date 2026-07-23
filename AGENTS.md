@@ -2,7 +2,7 @@
 
 ## 项目结构与模块组织
 
-本仓库包含企业 AI 平台目标设计与 Gate F 权限感知检索 PoC。架构 Markdown 文件位于 `docs\`，`README.md` 是运行与操作入口。`src\EnterpriseAI.Poc` 提供 .NET 8 最小 API、批准快照、权限预过滤和本地哈希链 Trace；`tests\EnterpriseAI.Poc.Regression` 运行 57 条缺陷/契约回归，`tests\EnterpriseAI.Poc.Evaluation` 根据 `evaluation\gate-f-golden-v1.json` 运行本地确定性评测。`scripts\Validate-Docs.ps1` 校验文档，`scripts\Export-GateFEvidence.ps1` 生成证据包，`scripts\Test-GateFEvidence.ps1` 离线校验证据包；`.github\workflows\docs-quality.yml` 在 push 和 PR 时执行门禁。
+本仓库包含企业 AI 平台目标设计与 Gate F 权限感知检索 PoC。架构 Markdown 文件位于 `docs\`，`README.md` 是运行与操作入口。`src\EnterpriseAI.Poc` 提供 .NET 8 最小 API、批准快照、权限预过滤和本地哈希链 Trace；`tests\EnterpriseAI.Poc.Regression` 运行 63 条缺陷/契约回归，`tests\EnterpriseAI.Poc.Evaluation` 根据 `evaluation\gate-f-golden-v1.json` 运行本地确定性评测。`scripts\Validate-Docs.ps1` 校验文档，`scripts\Export-GateFEvidence.ps1` 生成证据包，`scripts\Test-GateFEvidence.ps1` 离线校验证据包；`.github\workflows\docs-quality.yml` 在 push 和 PR 时执行门禁。
 
 ## 架构约束
 
@@ -24,7 +24,7 @@ rg -n 'TODO|FIXME|TBD|待定' .\docs
 rg -n '^#|^```' .\docs
 ```
 
-文档脚本先证明校验器能拒绝损坏样例，再检查标题、围栏、相对链接、JSON、版本和标识一致性。证据脚本重新执行 Release 构建、57 条回归（含 `REG-EVAL-*`、`REG-API-*`、Trace 与批准快照契约）、12 个 Golden 用例和文档门禁，原子发布证据包并输出 `GATE_F_SUMMARY`；离线验证脚本只读复核 schema、计数与哈希。PoC 构建启用警告即错误；还需人工预览 Markdown/Mermaid 并验证 YAML 语义。
+文档脚本先证明校验器能拒绝损坏样例，再检查标题、围栏、相对链接、JSON、版本和标识一致性。证据脚本重新执行 Release 构建、63 条回归（含 `REG-EVAL-*`、`REG-API-*`、Trace 与批准快照契约）、12 个 Golden 用例和文档门禁，原子发布证据包并输出 `GATE_F_SUMMARY`；离线验证脚本只读复核 schema、计数与哈希。PoC 构建启用警告即错误；还需人工预览 Markdown/Mermaid 并验证 YAML 语义。
 
 ## 编写风格与命名
 

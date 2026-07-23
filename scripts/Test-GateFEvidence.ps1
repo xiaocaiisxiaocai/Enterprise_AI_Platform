@@ -12,7 +12,7 @@ $ErrorActionPreference = 'Stop'
 $script:ExpectedSchemaVersion = '1.0'
 $script:ExpectedEvidenceType = 'gate-f-local-contract'
 $script:ExpectedStatus = 'PassedLocalContract'
-$script:ExpectedRegressionCount = 57
+$script:ExpectedRegressionCount = 63
 $script:ExpectedEvaluationCases = 12
 $script:Sha256Pattern = '^[0-9a-f]{64}$'
 $script:CommitShaPattern = '^[0-9a-f]{7,64}$'
@@ -356,10 +356,11 @@ function New-ValidEvidenceFixture {
         'REG-API-006', 'REG-API-007', 'REG-API-008', 'REG-API-009', 'REG-API-010',
         'REG-EVAL-001', 'REG-EVAL-002', 'REG-EVAL-003', 'REG-EVAL-004', 'REG-EVAL-005',
         'REG-EVAL-006', 'REG-EVAL-007', 'REG-EVAL-008', 'REG-EVAL-009', 'REG-EVAL-010',
-        'REG-EVAL-011', 'REG-EVAL-012', 'REG-EVAL-013'
+        'REG-EVAL-011', 'REG-EVAL-012', 'REG-EVAL-013', 'REG-EVAL-014', 'REG-EVAL-015',
+        'REG-TRACE-012', 'REG-TRACE-013', 'REG-SRC-016', 'REG-SRC-017'
     )
-    if ($regressionIds.Count -ne 57) {
-        throw "证据夹具回归 ID 数量必须为 57，实际为 $($regressionIds.Count)"
+    if ($regressionIds.Count -ne 63) {
+        throw "证据夹具回归 ID 数量必须为 63，实际为 $($regressionIds.Count)"
     }
 
     $traceLines = New-Object System.Collections.Generic.List[string]
@@ -466,7 +467,7 @@ function New-ValidEvidenceFixture {
             restore = 'Passed'
             release_build = 'Passed'
             regression = 'Passed'
-            regression_count = 57
+            regression_count = 63
             regression_ids = $regressionIds
             docs_validation = 'Passed'
             deterministic_evaluation = 'Passed'

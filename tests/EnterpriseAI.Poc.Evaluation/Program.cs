@@ -53,11 +53,14 @@ try
         $"cases={report.Metrics.PassedCases}/{report.Metrics.TotalCases} " +
         $"unauthorized_citations={report.Metrics.UnauthorizedCitationCount} " +
         $"trace_final_hash={report.TraceFinalHash}");
+    var commitSha = TryReadGitCommit();
     Console.WriteLine(
         "GATE_F_SUMMARY " +
-        $"dataset_sha256={report.DatasetSha256} " +
+        $"commit={commitSha} " +
+        "regression_count=n/a-in-evaluation-runner " +
         $"golden_cases={report.Metrics.PassedCases}/{report.Metrics.TotalCases} " +
         $"unauthorized_citations={report.Metrics.UnauthorizedCitationCount} " +
+        $"dataset_sha256={report.DatasetSha256} " +
         $"trace_final_hash={report.TraceFinalHash} " +
         "limitations=local-deterministic-only;no-probabilistic-ai-eval");
     return passed ? 0 : 1;
@@ -74,7 +77,7 @@ static int RunContractSelfTest()
     var manifestPath = Path.Combine(AppContext.BaseDirectory, "Data", "approved-source.json");
     var datasetPath = ResolveGoldenDatasetPath();
     var repository = DocumentRepository.LoadApprovedSnapshot(manifestPath);
-    return GoldenDatasetContractRegression.RunSelfTest(repository, datasetPath);
+    return GoldenDatasetContractRegression.RunSelfTest(repository, datasetPath, manifestPath);
 }
 
 static string ResolveGoldenDatasetPath()
@@ -111,5 +114,34 @@ static void TryDeleteUntrustedReport(string reportPath)
     catch
     {
         // 清理失败不掩盖评测错误退出码。
+    }
+}
+
+static string TryReadGitCommit()
+{
+    try
+    {
+        var startInfo = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = "git",
+            Arguments = "rev-parse HEAD",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        using var process = System.Diagnostics.Process.Start(startInfo);
+        if (process is null)
+        {
+            return "unavailable";
+        }
+
+        var output = process.StandardOutput.ReadToEnd().Trim();
+        process.WaitForExit(10_000);
+        return process.ExitCode == 0 && !string.IsNullOrWhiteSpace(output) ? output : "unavailable";
+    }
+    catch
+    {
+        return "unavailable";
     }
 }
