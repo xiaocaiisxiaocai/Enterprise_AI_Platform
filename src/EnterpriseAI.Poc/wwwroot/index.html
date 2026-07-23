@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>治理台 · Enterprise AI</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%23171816'/%3E%3Ctext x='32' y='44' text-anchor='middle' font-size='38' fill='%23f0eee7'%3E治%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="rail" aria-label="产品导航">
+      <a class="brand" href="#overview" aria-label="治理台首页">
+        <span class="brand-mark">治</span>
+        <span>治理台</span>
+      </a>
+      <nav>
+        <a class="nav-link active" href="#overview"><span>01</span>总览</a>
+        <a class="nav-link" href="#knowledge"><span>02</span>知识资产</a>
+        <a class="nav-link" href="#identities"><span>03</span>身份权限</a>
+        <a class="nav-link" href="#query-lab"><span>04</span>检索验证</a>
+      </nav>
+      <div class="scope-stamp">
+        <small>运行边界</small>
+        <strong>LOCAL / SINGLE ENTERPRISE</strong>
+        <span>无 OIDC · 无外部模型</span>
+      </div>
+    </aside>
+
+    <main>
+      <header class="masthead" id="overview">
+        <div>
+          <p class="eyebrow">GATE F · GOVERNANCE WORKBENCH</p>
+          <h1>把权限判断<br><em>摆到台面上。</em></h1>
+        </div>
+        <div class="masthead-meta">
+          <span id="connection-dot" class="connection-dot" aria-hidden="true"></span>
+          <div>
+            <small>本地运行状态</small>
+            <strong id="connection-label">正在连接</strong>
+          </div>
+          <button id="refresh-button" class="text-button" type="button">刷新数据 ↗</button>
+        </div>
+      </header>
+
+      <section class="metrics" aria-label="治理指标">
+        <article>
+          <span>知识修订</span>
+          <strong id="repository-revision">—</strong>
+          <small>repository revision</small>
+        </article>
+        <article>
+          <span>身份修订</span>
+          <strong id="identity-revision">—</strong>
+          <small>identity revision</small>
+        </article>
+        <article>
+          <span>当前发布</span>
+          <strong id="published-count">—</strong>
+          <small>published documents</small>
+        </article>
+        <article class="accent-metric">
+          <span>安全边界</span>
+          <strong>本地</strong>
+          <small>deterministic PoC only</small>
+        </article>
+      </section>
+
+      <section class="section-block" id="knowledge">
+        <div class="section-heading">
+          <div>
+            <span class="section-number">02</span>
+            <p class="eyebrow">KNOWLEDGE CONTROL</p>
+            <h2>知识资产与生命周期</h2>
+          </div>
+          <p>这里展示批准快照的治理元数据，不返回文档正文。撤回会立即影响后续检索。</p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>资产</th>
+                <th>来源 / 版本</th>
+                <th>允许组</th>
+                <th>状态</th>
+                <th><span class="sr-only">操作</span></th>
+              </tr>
+            </thead>
+            <tbody id="document-rows">
+              <tr><td colspan="5" class="loading-cell">正在读取治理快照…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section-block" id="identities">
+        <div class="section-heading">
+          <div>
+            <span class="section-number">03</span>
+            <p class="eyebrow">IDENTITY DIRECTORY</p>
+            <h2>合成身份与权限组</h2>
+          </div>
+          <p>仅用于 Development 演示。治理管理员自身受到保护，不能从控制台移除或降权。</p>
+        </div>
+        <div id="identity-grid" class="identity-grid" aria-live="polite"></div>
+      </section>
+
+      <section class="query-lab" id="query-lab">
+        <div class="query-copy">
+          <span class="section-number inverted">04</span>
+          <p class="eyebrow">PERMISSION-AWARE QUERY</p>
+          <h2>换一个身份，<br>看证据如何变化。</h2>
+          <p>选择合成用户并发起真实 HTTP 查询。相同问题会因 Group 与文档 ACL 不同而得到引用或拒答。</p>
+        </div>
+        <form id="query-form" class="query-form">
+          <label for="query-user">以谁的身份</label>
+          <select id="query-user" name="user"></select>
+          <label for="query-question">业务问题</label>
+          <textarea id="query-question" name="question" rows="4" maxlength="500">预算报销规则是什么？</textarea>
+          <button class="primary-button" type="submit">执行权限感知检索 <span>→</span></button>
+        </form>
+        <article id="query-result" class="query-result" aria-live="polite">
+          <span class="result-kicker">等待执行</span>
+          <p>查询结果、引用与 Trace ID 将显示在这里。</p>
+        </article>
+      </section>
+
+      <footer>
+        <span>Enterprise AI Platform · Gate F</span>
+        <span id="manifest-label">manifest —</span>
+      </footer>
+    </main>
+  </div>
+
+  <dialog id="group-dialog">
+    <form id="group-form" method="dialog">
+      <div class="dialog-head">
+        <div>
+          <p class="eyebrow">ACCESS CONTROL</p>
+          <h2 id="dialog-title">编辑权限组</h2>
+        </div>
+        <button class="icon-button" value="cancel" aria-label="关闭">×</button>
+      </div>
+      <input id="dialog-target-type" type="hidden">
+      <input id="dialog-target-id" type="hidden">
+      <label for="dialog-groups">Group 列表</label>
+      <input id="dialog-groups" autocomplete="off" placeholder="employees, finance">
+      <p class="field-help">使用英文逗号分隔；保存后立即影响新的权限判定。</p>
+      <div class="dialog-actions">
+        <button class="text-button" value="cancel">取消</button>
+        <button id="save-groups" class="primary-button" value="default">保存变更</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

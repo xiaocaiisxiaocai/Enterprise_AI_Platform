@@ -4,6 +4,8 @@ public sealed record QueryRequest(string Question);
 
 public sealed record ErrorResponse(string Code, string Message);
 
+public sealed record ReplaceGroupsRequest(string[] Groups);
+
 public sealed record Citation(
     string DocumentId,
     string Version,
@@ -82,6 +84,32 @@ public sealed record LocalFileIngestionResult(
     IReadOnlyList<IngestionQuarantineItem> Quarantined,
     long RepositoryRevision,
     string CheckpointHash);
+
+public sealed record PocIdentityGovernanceView(
+    string PrincipalId,
+    string TenantId,
+    IReadOnlyList<string> Groups,
+    bool Enabled,
+    bool IsGovernanceAdmin);
+
+public sealed record DocumentGovernanceView(
+    string Id,
+    string Version,
+    string Title,
+    string Section,
+    string SourcePath,
+    IReadOnlyList<string> AllowedGroups,
+    KnowledgeLifecycleStatus Status,
+    DateTimeOffset? ExpiresAtUtc);
+
+public sealed record GovernanceOverview(
+    string Scope,
+    long IdentityRevision,
+    long RepositoryRevision,
+    string SourceId,
+    string ManifestSha256,
+    IReadOnlyList<PocIdentityGovernanceView> Identities,
+    IReadOnlyList<DocumentGovernanceView> Documents);
 
 public sealed class PocIdentity
 {

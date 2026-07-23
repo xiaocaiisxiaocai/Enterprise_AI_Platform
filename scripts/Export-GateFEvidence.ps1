@@ -443,10 +443,10 @@ try {
         }
     })
     $regressionSummary = $regressionOutput | Where-Object {
-        $_.ToString() -match '^REGRESSION_TESTS=PASS count=92$'
+        $_.ToString() -match '^REGRESSION_TESTS=PASS count=99$'
     }
-    if ($testIds.Count -ne 92 -or $null -eq $regressionSummary) {
-        throw "回归输出与 92 条 Gate F/F.1/本地状态、Worker 与摄取契约不一致。"
+    if ($testIds.Count -ne 99 -or $null -eq $regressionSummary) {
+        throw "回归输出与 99 条 Gate F/F.1/本地治理台、状态、Worker 与摄取契约不一致。"
     }
     $ingestionEvidenceLine = @($regressionOutput | Where-Object {
         $_.ToString() -match '^INGESTION_EVIDENCE '

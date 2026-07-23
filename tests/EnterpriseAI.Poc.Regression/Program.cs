@@ -17,6 +17,11 @@ var identities = new PocIdentityDirectory();
 var traceSink = new InMemorySearchTraceSink();
 var search = new PermissionAwareSearchService(repository, traceSink, identities);
 var failures = new List<string>();
+var governanceJsonOptions = new JsonSerializerOptions
+{
+    PropertyNameCaseInsensitive = true,
+    Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() }
+};
 
 Run("REG-AUTH-001 未知身份不能解析", () =>
 {
@@ -802,6 +807,178 @@ await RunAsync("REG-API-010 并发请求保持 ACL 与 Trace 无问题原文", a
     }
 });
 
+await RunAsync("REG-GOV-001 治理总览拒绝缺失身份与普通身份", async () =>
+{
+    var localRepository = DocumentRepository.LoadApprovedSnapshot(dataPath);
+    await using var host = await StartApiHostAsync(
+        localRepository,
+        "Development",
+        new InMemorySearchTraceSink(),
+        enablePocIdentity: true);
+
+    using var anonymousResponse = await host.Client.GetAsync("/api/v1/poc/governance/overview");
+    AssertEqual(HttpStatusCode.Unauthorized, anonymousResponse.StatusCode, "治理总览接受了匿名请求");
+
+    using var financeRequest = new HttpRequestMessage(
+        HttpMethod.Get,
+        "/api/v1/poc/governance/overview");
+    financeRequest.Headers.Add("X-Poc-User", "alice-finance");
+    using var financeResponse = await host.Client.SendAsync(financeRequest);
+    AssertEqual(HttpStatusCode.Forbidden, financeResponse.StatusCode, "普通财务身份获得治理权限");
+});
+
+await RunAsync("REG-GOV-002 管理员总览只返回治理元数据", async () =>
+{
+    var localRepository = DocumentRepository.LoadApprovedSnapshot(dataPath);
+    await using var host = await StartApiHostAsync(
+        localRepository,
+        "Development",
+        new InMemorySearchTraceSink(),
+        enablePocIdentity: true);
+    using var request = new HttpRequestMessage(
+        HttpMethod.Get,
+        "/api/v1/poc/governance/overview");
+    request.Headers.Add("X-Poc-User", "admin-governance");
+    using var response = await host.Client.SendAsync(request);
+    var body = await response.Content.ReadAsStringAsync();
+    var overview = JsonSerializer.Deserialize<GovernanceOverview>(body, governanceJsonOptions);
+
+    AssertEqual(HttpStatusCode.OK, response.StatusCode, "管理员无法读取治理总览");
+    AssertEqual(3, overview!.Identities.Count, "治理总览身份数量不正确");
+    AssertEqual(3, overview.Documents.Count, "治理总览文档数量不正确");
+    AssertFalse(body.Contains("成本中心", StringComparison.Ordinal), "治理总览泄漏文档正文");
+    AssertFalse(body.Contains("\"content\"", StringComparison.OrdinalIgnoreCase), "治理总览包含正文属性");
+});
+
+await RunAsync("REG-GOV-003 文档 ACL 管理立即改变检索授权", async () =>
+{
+    var localRepository = DocumentRepository.LoadApprovedSnapshot(dataPath);
+    await using var host = await StartApiHostAsync(
+        localRepository,
+        "Development",
+        new InMemorySearchTraceSink(),
+        enablePocIdentity: true);
+    using var update = new HttpRequestMessage(
+        HttpMethod.Put,
+        "/api/v1/poc/governance/documents/doc-finance-001/acl")
+    {
+        Content = JsonContent.Create(new ReplaceGroupsRequest(["hr"]))
+    };
+    update.Headers.Add("X-Poc-User", "admin-governance");
+    using var updateResponse = await host.Client.SendAsync(update);
+    AssertEqual(HttpStatusCode.NoContent, updateResponse.StatusCode, "管理员更新文档 ACL 失败");
+
+    using var financeRequest = CreateQueryRequest("alice-finance", "预算报销规则是什么");
+    using var financeResponse = await host.Client.SendAsync(financeRequest);
+    var financePayload = await financeResponse.Content.ReadFromJsonAsync<QueryResponse>();
+    AssertEqual("refused", financePayload!.Status, "ACL 更新后财务身份仍保留旧授权");
+
+    using var hrRequest = CreateQueryRequest("bob-hr", "预算报销规则是什么");
+    using var hrResponse = await host.Client.SendAsync(hrRequest);
+    var hrPayload = await hrResponse.Content.ReadFromJsonAsync<QueryResponse>();
+    AssertEqual("answered", hrPayload!.Status, "ACL 更新后 HR 身份未获得新授权");
+});
+
+await RunAsync("REG-GOV-004 生命周期管理立即撤回并重新发布", async () =>
+{
+    var localRepository = DocumentRepository.LoadApprovedSnapshot(dataPath);
+    await using var host = await StartApiHostAsync(
+        localRepository,
+        "Development",
+        new InMemorySearchTraceSink(),
+        enablePocIdentity: true);
+
+    using var withdraw = new HttpRequestMessage(
+        HttpMethod.Post,
+        "/api/v1/poc/governance/documents/doc-finance-001/lifecycle/withdraw");
+    withdraw.Headers.Add("X-Poc-User", "admin-governance");
+    using var withdrawResponse = await host.Client.SendAsync(withdraw);
+    AssertEqual(HttpStatusCode.NoContent, withdrawResponse.StatusCode, "治理接口撤回失败");
+
+    using var refusedRequest = CreateQueryRequest("alice-finance", "预算报销规则是什么");
+    using var refusedResponse = await host.Client.SendAsync(refusedRequest);
+    var refused = await refusedResponse.Content.ReadFromJsonAsync<QueryResponse>();
+    AssertEqual("refused", refused!.Status, "撤回后仍返回文档");
+
+    using var publish = new HttpRequestMessage(
+        HttpMethod.Post,
+        "/api/v1/poc/governance/documents/doc-finance-001/lifecycle/publish");
+    publish.Headers.Add("X-Poc-User", "admin-governance");
+    using var publishResponse = await host.Client.SendAsync(publish);
+    AssertEqual(HttpStatusCode.NoContent, publishResponse.StatusCode, "治理接口重新发布失败");
+
+    using var answeredRequest = CreateQueryRequest("alice-finance", "预算报销规则是什么");
+    using var answeredResponse = await host.Client.SendAsync(answeredRequest);
+    var answered = await answeredResponse.Content.ReadFromJsonAsync<QueryResponse>();
+    AssertEqual("answered", answered!.Status, "重新发布后未恢复检索");
+});
+
+await RunAsync("REG-GOV-005 治理管理员身份受保护且未知字段被拒绝", async () =>
+{
+    var localRepository = DocumentRepository.LoadApprovedSnapshot(dataPath);
+    await using var host = await StartApiHostAsync(
+        localRepository,
+        "Development",
+        new InMemorySearchTraceSink(),
+        enablePocIdentity: true);
+    using var protectedRequest = new HttpRequestMessage(
+        HttpMethod.Put,
+        "/api/v1/poc/governance/identities/admin-governance/groups")
+    {
+        Content = JsonContent.Create(new ReplaceGroupsRequest(["employees"]))
+    };
+    protectedRequest.Headers.Add("X-Poc-User", "admin-governance");
+    using var protectedResponse = await host.Client.SendAsync(protectedRequest);
+    AssertEqual(HttpStatusCode.BadRequest, protectedResponse.StatusCode, "治理管理员可以移除自身权限");
+
+    using var invalidRequest = new HttpRequestMessage(
+        HttpMethod.Put,
+        "/api/v1/poc/governance/identities/alice-finance/groups")
+    {
+        Content = new StringContent(
+            "{\"groups\":[\"employees\"],\"tenantId\":\"attacker\"}",
+            Encoding.UTF8,
+            "application/json")
+    };
+    invalidRequest.Headers.Add("X-Poc-User", "admin-governance");
+    using var invalidResponse = await host.Client.SendAsync(invalidRequest);
+    AssertEqual(HttpStatusCode.BadRequest, invalidResponse.StatusCode, "治理接口接受了未知字段");
+    AssertCleanClientErrorBody(await invalidResponse.Content.ReadAsStringAsync());
+});
+
+await RunAsync("REG-UI-001 Development 提供可操作治理控制台资源", async () =>
+{
+    var localRepository = DocumentRepository.LoadApprovedSnapshot(dataPath);
+    await using var host = await StartApiHostAsync(
+        localRepository,
+        "Development",
+        new InMemorySearchTraceSink(),
+        enablePocIdentity: true);
+    using var page = await host.Client.GetAsync("/");
+    var html = await page.Content.ReadAsStringAsync();
+    AssertEqual(HttpStatusCode.OK, page.StatusCode, "Development 未提供治理控制台首页");
+    AssertTrue(html.Contains("治理台", StringComparison.Ordinal), "治理控制台缺少产品标题");
+    AssertTrue(html.Contains("/app.js", StringComparison.Ordinal), "治理控制台未加载交互脚本");
+
+    using var script = await host.Client.GetAsync("/app.js");
+    var javascript = await script.Content.ReadAsStringAsync();
+    AssertEqual(HttpStatusCode.OK, script.StatusCode, "治理控制台脚本不可访问");
+    AssertTrue(javascript.Contains("/api/v1/poc/governance", StringComparison.Ordinal),
+        "控制台没有连接真实治理 API");
+});
+
+await RunAsync("REG-UI-002 Production 不提供本地治理控制台", async () =>
+{
+    var localRepository = DocumentRepository.LoadApprovedSnapshot(dataPath);
+    await using var host = await StartApiHostAsync(
+        localRepository,
+        "Production",
+        new InMemorySearchTraceSink(),
+        enablePocIdentity: false);
+    using var response = await host.Client.GetAsync("/");
+    AssertEqual(HttpStatusCode.NotFound, response.StatusCode, "Production 暴露了本地治理控制台");
+});
+
 Run("REG-TRACE-012 Trace 未授权字段注入检测", () =>
 {
     WithTemporaryTraceFile(path =>
@@ -1429,7 +1606,7 @@ var ingestionEvidence = BuildIngestionEvidence();
 Console.WriteLine(
     "INGESTION_EVIDENCE " +
     JsonSerializer.Serialize(ingestionEvidence));
-const int ExpectedRegressionCount = 92;
+const int ExpectedRegressionCount = 99;
 Console.WriteLine($"REGRESSION_TESTS=PASS count={ExpectedRegressionCount}");
 WriteFullGateFSummary(
     commitSha: TryReadGitCommit(),
@@ -1992,7 +2169,22 @@ static async Task<ApiTestHost> StartApiHostAsync(
     var args = enablePocIdentity
         ? new[] { "--GateF:PocIdentityEnabled=true" }
         : Array.Empty<string>();
-    var application = PocApplication.Build(args, repository, environment, traceSink);
+    var webRoot = Path.GetFullPath(Path.Combine(
+        AppContext.BaseDirectory,
+        "..",
+        "..",
+        "..",
+        "..",
+        "..",
+        "src",
+        "EnterpriseAI.Poc",
+        "wwwroot"));
+    var application = PocApplication.Build(
+        args,
+        repository,
+        environment,
+        traceSink,
+        webRootPath: webRoot);
     application.Urls.Add("http://127.0.0.1:0");
     await application.StartAsync();
     var addresses = application.Services

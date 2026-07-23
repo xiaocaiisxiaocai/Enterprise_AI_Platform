@@ -17,11 +17,17 @@ public static class PocApplication
         DocumentRepository? repository = null,
         string? environmentName = null,
         ISearchTraceSink? traceSink = null,
-        LocalStateStore? stateStore = null)
+        LocalStateStore? stateStore = null,
+        string? webRootPath = null)
     {
         var options = string.IsNullOrWhiteSpace(environmentName)
-            ? new WebApplicationOptions { Args = args }
-            : new WebApplicationOptions { Args = args, EnvironmentName = environmentName };
+            ? new WebApplicationOptions { Args = args, WebRootPath = webRootPath }
+            : new WebApplicationOptions
+            {
+                Args = args,
+                EnvironmentName = environmentName,
+                WebRootPath = webRootPath
+            };
 
         var builder = WebApplication.CreateBuilder(options);
         var pocIdentityEnabled = bool.TryParse(
@@ -43,6 +49,7 @@ public static class PocApplication
             jsonOptions.SerializerOptions.PropertyNameCaseInsensitive = true;
             jsonOptions.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
             jsonOptions.SerializerOptions.UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow;
+            jsonOptions.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
         });
         var configuredStatePath = builder.Configuration["GateF:LocalState:Path"];
         var localStateStore = stateStore ??
@@ -105,6 +112,12 @@ public static class PocApplication
 
         var application = builder.Build();
 
+        if (pocIdentityEnabled && application.Environment.IsDevelopment())
+        {
+            application.UseDefaultFiles();
+            application.UseStaticFiles();
+        }
+
         application.MapGet("/healthz", () =>
             TypedResults.Ok(new { status = "healthy", scope = "gate-f-poc" }));
 
@@ -158,7 +171,230 @@ public static class PocApplication
             return TypedResults.Ok(search.Query(identity, request.Question));
         });
 
+        application.MapGet("/api/v1/poc/governance/overview", (
+            HttpRequest httpRequest,
+            PocIdentityDirectory identities,
+            DocumentRepository documents) =>
+        {
+            var rejection = AuthorizeGovernance(
+                httpRequest,
+                identities,
+                pocIdentityEnabled,
+                application.Environment.IsDevelopment());
+            if (rejection is not null)
+            {
+                return rejection;
+            }
+
+            return TypedResults.Ok(new GovernanceOverview(
+                "local-single-enterprise-poc",
+                identities.Revision,
+                documents.Revision,
+                documents.SourceId,
+                documents.ManifestSha256,
+                identities.GetGovernanceSnapshot(),
+                documents.GetGovernanceSnapshot()));
+        });
+
+        application.MapPut("/api/v1/poc/governance/identities/{principalId}/groups",
+            async Task<IResult> (
+                string principalId,
+                HttpRequest httpRequest,
+                PocIdentityDirectory identities) =>
+            {
+                var rejection = AuthorizeGovernance(
+                    httpRequest,
+                    identities,
+                    pocIdentityEnabled,
+                    application.Environment.IsDevelopment());
+                if (rejection is not null)
+                {
+                    return rejection;
+                }
+
+                var (request, error) = await ReadJsonAsync<ReplaceGroupsRequest>(httpRequest);
+                if (error is not null)
+                {
+                    return error;
+                }
+                if (request?.Groups is null ||
+                    request.Groups.Length == 0 ||
+                    request.Groups.Any(string.IsNullOrWhiteSpace))
+                {
+                    return TypedResults.BadRequest(new ErrorResponse(
+                        "invalid_groups",
+                        "Groups 必须至少包含一个非空值。"));
+                }
+                if (string.Equals(
+                        principalId,
+                        "admin-governance",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return TypedResults.BadRequest(new ErrorResponse(
+                        "protected_identity",
+                        "治理管理员身份不能通过演示接口修改。"));
+                }
+
+                try
+                {
+                    identities.ReplaceGroups(principalId, request.Groups);
+                    return TypedResults.NoContent();
+                }
+                catch (KeyNotFoundException)
+                {
+                    return TypedResults.NotFound(new ErrorResponse(
+                        "identity_not_found",
+                        "本地测试身份不存在。"));
+                }
+            });
+
+        application.MapPut("/api/v1/poc/governance/documents/{documentId}/acl",
+            async Task<IResult> (
+                string documentId,
+                HttpRequest httpRequest,
+                PocIdentityDirectory identities,
+                DocumentRepository documents) =>
+            {
+                var rejection = AuthorizeGovernance(
+                    httpRequest,
+                    identities,
+                    pocIdentityEnabled,
+                    application.Environment.IsDevelopment());
+                if (rejection is not null)
+                {
+                    return rejection;
+                }
+
+                var (request, error) = await ReadJsonAsync<ReplaceGroupsRequest>(httpRequest);
+                if (error is not null)
+                {
+                    return error;
+                }
+                try
+                {
+                    documents.ReplaceAllowedGroups(documentId, request?.Groups ?? []);
+                    return TypedResults.NoContent();
+                }
+                catch (ArgumentException)
+                {
+                    return TypedResults.BadRequest(new ErrorResponse(
+                        "invalid_groups",
+                        "文档 ACL 必须至少包含一个非空 Group。"));
+                }
+                catch (KeyNotFoundException)
+                {
+                    return TypedResults.NotFound(new ErrorResponse(
+                        "document_not_found",
+                        "本地知识文档不存在。"));
+                }
+                catch (InvalidOperationException)
+                {
+                    return TypedResults.Conflict(new ErrorResponse(
+                        "document_deleted",
+                        "已删除文档不能修改 ACL。"));
+                }
+            });
+
+        application.MapPost(
+            "/api/v1/poc/governance/documents/{documentId}/lifecycle/{action}",
+            (
+                string documentId,
+                string action,
+                HttpRequest httpRequest,
+                PocIdentityDirectory identities,
+                DocumentRepository documents) =>
+            {
+                var rejection = AuthorizeGovernance(
+                    httpRequest,
+                    identities,
+                    pocIdentityEnabled,
+                    application.Environment.IsDevelopment());
+                if (rejection is not null)
+                {
+                    return rejection;
+                }
+
+                try
+                {
+                    if (string.Equals(action, "publish", StringComparison.OrdinalIgnoreCase))
+                    {
+                        documents.Publish(documentId);
+                    }
+                    else if (string.Equals(action, "withdraw", StringComparison.OrdinalIgnoreCase))
+                    {
+                        documents.Withdraw(documentId);
+                    }
+                    else
+                    {
+                        return TypedResults.BadRequest(new ErrorResponse(
+                            "invalid_lifecycle_action",
+                            "生命周期操作仅支持 publish 或 withdraw。"));
+                    }
+                    return TypedResults.NoContent();
+                }
+                catch (KeyNotFoundException)
+                {
+                    return TypedResults.NotFound(new ErrorResponse(
+                        "document_not_found",
+                        "本地知识文档不存在。"));
+                }
+                catch (InvalidOperationException)
+                {
+                    return TypedResults.Conflict(new ErrorResponse(
+                        "document_deleted",
+                        "已删除文档不能重新发布或撤回。"));
+                }
+            });
+
         return application;
+    }
+
+    private static IResult? AuthorizeGovernance(
+        HttpRequest request,
+        PocIdentityDirectory identities,
+        bool pocIdentityEnabled,
+        bool isDevelopment)
+    {
+        if (!pocIdentityEnabled ||
+            !isDevelopment ||
+            !request.Headers.TryGetValue("X-Poc-User", out var userHeader) ||
+            !identities.TryResolve(userHeader.ToString(), out var identity))
+        {
+            return TypedResults.Unauthorized();
+        }
+
+        return identity.Groups.Contains(PocIdentityDirectory.GovernanceAdminGroup)
+            ? null
+            : TypedResults.StatusCode(StatusCodes.Status403Forbidden);
+    }
+
+    private static async Task<(T? Request, IResult? Error)> ReadJsonAsync<T>(
+        HttpRequest httpRequest)
+    {
+        if (!httpRequest.HasJsonContentType())
+        {
+            return (default, TypedResults.BadRequest(new ErrorResponse(
+                "invalid_content_type",
+                "Content-Type 必须为 application/json。")));
+        }
+
+        try
+        {
+            var request = await JsonSerializer.DeserializeAsync<T>(
+                httpRequest.Body,
+                QueryJsonOptions);
+            return request is null
+                ? (default, TypedResults.BadRequest(new ErrorResponse(
+                    "invalid_request",
+                    "请求体不能为空。")))
+                : (request, null);
+        }
+        catch (JsonException)
+        {
+            return (default, TypedResults.BadRequest(new ErrorResponse(
+                "invalid_request",
+                "请求体无效、字段类型错误或包含未知字段。")));
+        }
     }
 
     private static int ReadPositiveInt(string? value, int defaultValue)

@@ -54,7 +54,7 @@ try
         $"unauthorized_citations={report.Metrics.UnauthorizedCitationCount} " +
         $"trace_final_hash={report.TraceFinalHash}");
     var commitSha = TryReadGitCommit();
-    // Evaluation 入口本身不执行 63 条 REG；导出脚本会给出完整回归计数。
+    // Evaluation 入口本身不执行 99 条完整 REG；导出脚本会给出全量回归计数。
     // 此处仍输出完整字段集合，regression_count 以 contract 维度标注为 evaluation-only=0。
     Console.WriteLine(
         "GATE_F_SUMMARY " +

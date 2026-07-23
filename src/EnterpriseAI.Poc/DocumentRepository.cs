@@ -101,6 +101,27 @@ public sealed class DocumentRepository
         }
     }
 
+    public IReadOnlyList<DocumentGovernanceView> GetGovernanceSnapshot()
+    {
+        lock (_sync)
+        {
+            return _documents.Values
+                .OrderBy(entry => entry.Document.Id, StringComparer.Ordinal)
+                .Select(entry => new DocumentGovernanceView(
+                    entry.Document.Id,
+                    entry.Document.Version,
+                    entry.Document.Title,
+                    entry.Document.Section,
+                    entry.Document.SourcePath,
+                    entry.Document.AllowedGroups
+                        .Order(StringComparer.OrdinalIgnoreCase)
+                        .ToArray(),
+                    entry.Status,
+                    entry.ExpiresAtUtc))
+                .ToArray();
+        }
+    }
+
     public void ReplaceAllowedGroups(string documentId, IEnumerable<string> allowedGroups)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(documentId);

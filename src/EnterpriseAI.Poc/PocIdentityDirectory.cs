@@ -3,6 +3,7 @@ namespace EnterpriseAI.Poc;
 public sealed class PocIdentityDirectory
 {
     public const string EnterpriseTenantId = "enterprise-internal";
+    public const string GovernanceAdminGroup = "governance-admin";
 
     private readonly object _sync = new();
     private readonly Dictionary<string, PocIdentity> _identities =
@@ -15,7 +16,11 @@ public sealed class PocIdentityDirectory
             ["bob-hr"] = new(
                 "bob-hr",
                 EnterpriseTenantId,
-                ["employees", "hr"])
+                ["employees", "hr"]),
+            ["admin-governance"] = new(
+                "admin-governance",
+                EnterpriseTenantId,
+                ["employees", GovernanceAdminGroup])
         };
     private readonly HashSet<string> _disabled = new(StringComparer.OrdinalIgnoreCase);
     private readonly LocalStateStore? _stateStore;
@@ -58,6 +63,22 @@ public sealed class PocIdentityDirectory
 
             identity = null!;
             return false;
+        }
+    }
+
+    public IReadOnlyList<PocIdentityGovernanceView> GetGovernanceSnapshot()
+    {
+        lock (_sync)
+        {
+            return _identities.Values
+                .OrderBy(identity => identity.PrincipalId, StringComparer.Ordinal)
+                .Select(identity => new PocIdentityGovernanceView(
+                    identity.PrincipalId,
+                    identity.TenantId,
+                    identity.Groups.Order(StringComparer.OrdinalIgnoreCase).ToArray(),
+                    !_disabled.Contains(identity.PrincipalId),
+                    identity.Groups.Contains(GovernanceAdminGroup)))
+                .ToArray();
         }
     }
 
