@@ -1,5 +1,6 @@
 using EnterpriseAI.Poc;
 using EnterpriseAI.Poc.Evaluation;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.Extensions.DependencyInjection;
@@ -211,88 +212,214 @@ Run("REG-TRACE-005 Trace 写入失败时检索失败关闭", () =>
         "Trace 写入失败后仍返回检索结果");
 });
 
-await RunAsync("REG-API-001 HTTP 契约执行身份、ACL 与输入边界", async () =>
+await RunAsync("REG-API-001 HTTP 契约执行身份、ACL 与 Tenant 注入边界", async () =>
 {
     var apiTraceSink = new InMemorySearchTraceSink();
-    await using var application = PocApplication.Build(
-        ["--GateF:PocIdentityEnabled=true"],
-        repository,
-        "Development",
-        apiTraceSink);
-    application.Urls.Add("http://127.0.0.1:0");
-    await application.StartAsync();
+    await using var host = await StartApiHostAsync(repository, "Development", apiTraceSink, enablePocIdentity: true);
+    using var client = host.Client;
 
-    var addresses = application.Services
-        .GetRequiredService<IServer>()
-        .Features
-        .Get<IServerAddressesFeature>()?
-        .Addresses;
-    var address = addresses?.SingleOrDefault()
-        ?? throw new InvalidOperationException("测试 API 未获得监听地址");
-    using var client = new HttpClient { BaseAddress = new Uri(address) };
-
-    using var financeRequest = new HttpRequestMessage(HttpMethod.Post, "/api/v1/query")
-    {
-        Content = JsonContent.Create(new QueryRequest("预算报销规则是什么"))
-    };
-    financeRequest.Headers.Add("X-Poc-User", "alice-finance");
+    using var financeRequest = CreateQueryRequest("alice-finance", "预算报销规则是什么");
     using var financeResponse = await client.SendAsync(financeRequest);
     var financePayload = await financeResponse.Content.ReadFromJsonAsync<QueryResponse>();
     AssertEqual(HttpStatusCode.OK, financeResponse.StatusCode, "财务 API 请求失败");
     AssertEqual("doc-finance-001", SingleCitation(financePayload!).DocumentId, "API 未返回财务引用");
 
-    using var hrRequest = new HttpRequestMessage(HttpMethod.Post, "/api/v1/query")
-    {
-        Content = JsonContent.Create(new QueryRequest("预算报销规则是什么"))
-    };
-    hrRequest.Headers.Add("X-Poc-User", "bob-hr");
+    using var hrRequest = CreateQueryRequest("bob-hr", "预算报销规则是什么");
     using var hrResponse = await client.SendAsync(hrRequest);
     var hrPayload = await hrResponse.Content.ReadFromJsonAsync<QueryResponse>();
     AssertEqual(HttpStatusCode.OK, hrResponse.StatusCode, "HR API 请求失败");
     AssertEqual("refused", hrPayload!.Status, "HTTP 层泄漏财务答案");
     AssertEqual(0, hrPayload.Citations.Count, "HTTP 层泄漏财务引用");
-
-    using var missingIdentityResponse = await client.PostAsJsonAsync(
-        "/api/v1/query",
-        new QueryRequest("预算报销规则是什么"));
-    AssertEqual(HttpStatusCode.Unauthorized, missingIdentityResponse.StatusCode, "缺失身份未返回 401");
+    AssertNoAuthorizedLeak(await hrResponse.Content.ReadAsStringAsync());
 
     using var tenantInjection = new HttpRequestMessage(HttpMethod.Post, "/api/v1/query")
     {
         Content = new StringContent(
             "{\"question\":\"预算规则\",\"tenantId\":\"attacker-selected\"}",
-            System.Text.Encoding.UTF8,
+            Encoding.UTF8,
             "application/json")
     };
     tenantInjection.Headers.Add("X-Poc-User", "alice-finance");
     using var tenantInjectionResponse = await client.SendAsync(tenantInjection);
     AssertEqual(HttpStatusCode.BadRequest, tenantInjectionResponse.StatusCode, "客户端 Tenant 注入未被拒绝");
 
-    await using var productionApplication = PocApplication.Build(
-        [],
+    await using var productionHost = await StartApiHostAsync(
         repository,
         "Production",
-        new InMemorySearchTraceSink());
-    productionApplication.Urls.Add("http://127.0.0.1:0");
-    await productionApplication.StartAsync();
-    var productionAddresses = productionApplication.Services
-        .GetRequiredService<IServer>()
-        .Features
-        .Get<IServerAddressesFeature>()?
-        .Addresses;
-    var productionAddress = productionAddresses?.SingleOrDefault()
-        ?? throw new InvalidOperationException("Production 测试 API 未获得监听地址");
-    using var productionClient = new HttpClient { BaseAddress = new Uri(productionAddress) };
-    using var productionRequest = new HttpRequestMessage(HttpMethod.Post, "/api/v1/query")
-    {
-        Content = JsonContent.Create(new QueryRequest("预算报销规则是什么"))
-    };
-    productionRequest.Headers.Add("X-Poc-User", "alice-finance");
-    using var productionResponse = await productionClient.SendAsync(productionRequest);
+        new InMemorySearchTraceSink(),
+        enablePocIdentity: false);
+    using var productionRequest = CreateQueryRequest("alice-finance", "预算报销规则是什么");
+    using var productionResponse = await productionHost.Client.SendAsync(productionRequest);
     AssertEqual(
         HttpStatusCode.Unauthorized,
         productionResponse.StatusCode,
         "Production 默认配置接受了 X-Poc-User");
+});
+
+await RunAsync("REG-API-002 空白问题返回 4xx 且不落 Trace 原文", async () =>
+{
+    var sink = new InMemorySearchTraceSink();
+    await using var host = await StartApiHostAsync(repository, "Development", sink, enablePocIdentity: true);
+    using var request = CreateQueryRequest("alice-finance", "   ");
+    using var response = await host.Client.SendAsync(request);
+    AssertTrue((int)response.StatusCode is >= 400 and < 500, "空白问题未返回 4xx");
+    AssertNoAuthorizedLeak(await response.Content.ReadAsStringAsync());
+    AssertFalse(
+        sink.Records.Any(record => JsonSerializer.Serialize(record).Contains("   ", StringComparison.Ordinal)),
+        "空白问题不应以原文落入 Trace");
+    AssertEqual(0, sink.Records.Count, "空白问题不应产生检索 Trace");
+});
+
+await RunAsync("REG-API-003 超长问题返回 4xx 且不落 Trace 原文", async () =>
+{
+    var sink = new InMemorySearchTraceSink();
+    await using var host = await StartApiHostAsync(repository, "Development", sink, enablePocIdentity: true);
+    var longQuestion = new string('问', 501);
+    using var request = CreateQueryRequest("alice-finance", longQuestion);
+    using var response = await host.Client.SendAsync(request);
+    AssertTrue((int)response.StatusCode is >= 400 and < 500, "超长问题未返回 4xx");
+    var body = await response.Content.ReadAsStringAsync();
+    AssertNoAuthorizedLeak(body);
+    AssertFalse(body.Contains(longQuestion, StringComparison.Ordinal), "错误响应回显了超长问题原文");
+    AssertEqual(0, sink.Records.Count, "超长问题不应产生检索 Trace");
+});
+
+await RunAsync("REG-API-004 空测试身份返回 401", async () =>
+{
+    await using var host = await StartApiHostAsync(
+        repository,
+        "Development",
+        new InMemorySearchTraceSink(),
+        enablePocIdentity: true);
+    using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/query")
+    {
+        Content = JsonContent.Create(new QueryRequest("预算报销规则是什么"))
+    };
+    request.Headers.Add("X-Poc-User", " ");
+    using var response = await host.Client.SendAsync(request);
+    AssertEqual(HttpStatusCode.Unauthorized, response.StatusCode, "空测试身份未返回 401");
+    AssertNoAuthorizedLeak(await response.Content.ReadAsStringAsync());
+});
+
+await RunAsync("REG-API-005 未知测试身份返回 401", async () =>
+{
+    await using var host = await StartApiHostAsync(
+        repository,
+        "Development",
+        new InMemorySearchTraceSink(),
+        enablePocIdentity: true);
+    using var request = CreateQueryRequest("not-a-known-user", "预算报销规则是什么");
+    using var response = await host.Client.SendAsync(request);
+    AssertEqual(HttpStatusCode.Unauthorized, response.StatusCode, "未知测试身份未返回 401");
+    AssertNoAuthorizedLeak(await response.Content.ReadAsStringAsync());
+});
+
+await RunAsync("REG-API-006 错误 Content-Type 返回 4xx", async () =>
+{
+    await using var host = await StartApiHostAsync(
+        repository,
+        "Development",
+        new InMemorySearchTraceSink(),
+        enablePocIdentity: true);
+    using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/query")
+    {
+        Content = new StringContent(
+            "{\"question\":\"预算报销规则是什么\"}",
+            Encoding.UTF8,
+            "text/plain")
+    };
+    request.Headers.Add("X-Poc-User", "alice-finance");
+    using var response = await host.Client.SendAsync(request);
+    AssertTrue((int)response.StatusCode is >= 400 and < 500, "错误 Content-Type 未返回 4xx");
+    AssertNoAuthorizedLeak(await response.Content.ReadAsStringAsync());
+});
+
+await RunAsync("REG-API-007 畸形 JSON 返回 4xx", async () =>
+{
+    await using var host = await StartApiHostAsync(
+        repository,
+        "Development",
+        new InMemorySearchTraceSink(),
+        enablePocIdentity: true);
+    using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/query")
+    {
+        Content = new StringContent("{\"question\":", Encoding.UTF8, "application/json")
+    };
+    request.Headers.Add("X-Poc-User", "alice-finance");
+    using var response = await host.Client.SendAsync(request);
+    AssertTrue((int)response.StatusCode is >= 400 and < 500, "畸形 JSON 未返回 4xx");
+    AssertNoAuthorizedLeak(await response.Content.ReadAsStringAsync());
+});
+
+await RunAsync("REG-API-008 未知字段返回 4xx", async () =>
+{
+    await using var host = await StartApiHostAsync(
+        repository,
+        "Development",
+        new InMemorySearchTraceSink(),
+        enablePocIdentity: true);
+    using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/query")
+    {
+        Content = new StringContent(
+            "{\"question\":\"预算规则\",\"extra\":\"nope\"}",
+            Encoding.UTF8,
+            "application/json")
+    };
+    request.Headers.Add("X-Poc-User", "alice-finance");
+    using var response = await host.Client.SendAsync(request);
+    AssertTrue((int)response.StatusCode is >= 400 and < 500, "未知字段未返回 4xx");
+    AssertNoAuthorizedLeak(await response.Content.ReadAsStringAsync());
+});
+
+await RunAsync("REG-API-009 错误字段类型返回 4xx", async () =>
+{
+    await using var host = await StartApiHostAsync(
+        repository,
+        "Development",
+        new InMemorySearchTraceSink(),
+        enablePocIdentity: true);
+    using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/query")
+    {
+        Content = new StringContent(
+            "{\"question\":12345}",
+            Encoding.UTF8,
+            "application/json")
+    };
+    request.Headers.Add("X-Poc-User", "alice-finance");
+    using var response = await host.Client.SendAsync(request);
+    AssertTrue((int)response.StatusCode is >= 400 and < 500, "错误字段类型未返回 4xx");
+    AssertNoAuthorizedLeak(await response.Content.ReadAsStringAsync());
+});
+
+await RunAsync("REG-API-010 并发请求保持 ACL 与 Trace 无问题原文", async () =>
+{
+    var sink = new InMemorySearchTraceSink();
+    await using var host = await StartApiHostAsync(repository, "Development", sink, enablePocIdentity: true);
+    const string secretQuestion = "并发预算报销规则探测-UNIQUE-MARKER";
+    var tasks = Enumerable.Range(0, 16).Select(async index =>
+    {
+        var user = index % 2 == 0 ? "alice-finance" : "bob-hr";
+        using var request = CreateQueryRequest(user, secretQuestion);
+        using var response = await host.Client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+        AssertEqual(HttpStatusCode.OK, response.StatusCode, "并发请求未返回 200");
+        if (user == "bob-hr")
+        {
+            AssertNoAuthorizedLeak(body);
+            AssertFalse(body.Contains("doc-finance-001", StringComparison.Ordinal), "并发拒答泄漏财务文档 ID");
+        }
+        else
+        {
+            AssertTrue(body.Contains("doc-finance-001", StringComparison.Ordinal), "并发财务请求未返回引用");
+        }
+    });
+    await Task.WhenAll(tasks);
+    AssertEqual(16, sink.Records.Count, "并发 Trace 条目数不正确");
+    foreach (var record in sink.Records)
+    {
+        var serialized = JsonSerializer.Serialize(record);
+        AssertFalse(serialized.Contains(secretQuestion, StringComparison.Ordinal), "Trace 保存了问题原文");
+    }
 });
 
 var goldenDatasetPath = ResolveGoldenDatasetPath();
@@ -312,7 +439,7 @@ if (failures.Count > 0)
     return 1;
 }
 
-const int ExpectedRegressionCount = 32;
+const int ExpectedRegressionCount = 41;
 Console.WriteLine($"REGRESSION_TESTS=PASS count={ExpectedRegressionCount}");
 return 0;
 
@@ -541,6 +668,57 @@ static string ResolveGoldenDatasetPath()
     }
 
     throw new FileNotFoundException("未找到 evaluation\\gate-f-golden-v1.json。");
+}
+
+static HttpRequestMessage CreateQueryRequest(string user, string question)
+{
+    var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/query")
+    {
+        Content = JsonContent.Create(new QueryRequest(question))
+    };
+    request.Headers.Add("X-Poc-User", user);
+    return request;
+}
+
+static void AssertNoAuthorizedLeak(string body)
+{
+    AssertFalse(body.Contains("成本中心", StringComparison.Ordinal), "响应泄漏财务正文");
+    AssertFalse(body.Contains("预算报销", StringComparison.Ordinal) && body.Contains("doc-finance-001", StringComparison.Ordinal),
+        "响应泄漏财务授权内容组合");
+}
+
+static async Task<ApiTestHost> StartApiHostAsync(
+    DocumentRepository repository,
+    string environment,
+    ISearchTraceSink traceSink,
+    bool enablePocIdentity)
+{
+    var args = enablePocIdentity
+        ? new[] { "--GateF:PocIdentityEnabled=true" }
+        : Array.Empty<string>();
+    var application = PocApplication.Build(args, repository, environment, traceSink);
+    application.Urls.Add("http://127.0.0.1:0");
+    await application.StartAsync();
+    var addresses = application.Services
+        .GetRequiredService<IServer>()
+        .Features
+        .Get<IServerAddressesFeature>()?
+        .Addresses;
+    var address = addresses?.SingleOrDefault()
+        ?? throw new InvalidOperationException("测试 API 未获得监听地址");
+    var client = new HttpClient { BaseAddress = new Uri(address) };
+    return new ApiTestHost(application, client);
+}
+
+file sealed class ApiTestHost(WebApplication application, HttpClient client) : IAsyncDisposable
+{
+    public HttpClient Client { get; } = client;
+
+    public async ValueTask DisposeAsync()
+    {
+        Client.Dispose();
+        await application.DisposeAsync();
+    }
 }
 
 file sealed class FailingSearchTraceSink : ISearchTraceSink
