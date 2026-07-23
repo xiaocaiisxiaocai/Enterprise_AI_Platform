@@ -56,3 +56,5 @@ API Trace 默认写入被 Git 忽略的 `.gate-f\search-traces.jsonl`。CI（`.g
 ## 文档入口
 
 从 [`docs\00_Index.md`](docs/00_Index.md) 开始阅读。能力状态以各文档页眉与 ADR 为准：目标架构多为 **Planned**；Gate F 本地确定性切片为 **PartiallyImplemented / Implemented（仅本地契约）**，不得外推为生产安全或业务验收。
+
+Gate F V1.0 的固定契约、建立条件与排除范围见 [`docs\25_Gate_F_V1.0基线清单.md`](docs/25_Gate_F_V1.0基线清单.md)。标签创建前状态保持 **BaselineCandidate**。

@@ -79,6 +79,7 @@
 | 22 | [组织责任与RACI运营模型](22_组织责任与RACI运营模型.md) | 唯一 Accountable、职责分离、人工容量和事件升级 | Planned |
 | 23 | [Model Gateway契约设计](23_Model_Gateway契约设计.md) | 模型调用、路由、流式、预算、错误、计量和退出契约 | Planned |
 | 24 | [测试评测与证据追踪计划](24_测试评测与证据追踪计划.md) | 原子验证、AI Eval、威胁测试、证据包和发布门禁 | PartiallyImplemented（文档门禁 + Gate F 回归/确定性评测/证据包） |
+| 25 | [Gate F V1.0 基线清单](25_Gate_F_V1.0基线清单.md) | 固定契约、证据门禁、排除范围和标签条件 | BaselineCandidate |
 
 ## 6. 推荐阅读路径
 
