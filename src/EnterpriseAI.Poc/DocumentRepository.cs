@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -11,13 +12,25 @@ public sealed class DocumentRepository
         PropertyNameCaseInsensitive = true,
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
     };
+    private static readonly UTF8Encoding StrictUtf8 = new(
+        encoderShouldEmitUTF8Identifier: false,
+        throwOnInvalidBytes: true);
 
-    private DocumentRepository(IReadOnlyList<DocumentRecord> documents)
+    private DocumentRepository(
+        IReadOnlyList<DocumentRecord> documents,
+        string sourceId,
+        string manifestSha256)
     {
         Documents = documents;
+        SourceId = sourceId;
+        ManifestSha256 = manifestSha256;
     }
 
     public IReadOnlyList<DocumentRecord> Documents { get; }
+
+    public string SourceId { get; }
+
+    public string ManifestSha256 { get; }
 
     public static DocumentRepository LoadApprovedSnapshot(string manifestPath)
     {
@@ -26,8 +39,9 @@ public sealed class DocumentRepository
             throw new FileNotFoundException("批准数据源清单不存在。", manifestPath);
         }
 
+        var manifestBytes = File.ReadAllBytes(manifestPath);
         var manifest = JsonSerializer.Deserialize<ApprovedSourceManifest>(
-            File.ReadAllText(manifestPath),
+            manifestBytes,
             SerializerOptions);
 
         if (manifest is null || manifest.Documents is null || manifest.Documents.Length == 0)
@@ -51,13 +65,14 @@ public sealed class DocumentRepository
             }
 
             var sourcePath = ResolveSourcePath(rootPath, entry.RelativePath);
-            var actualHash = ComputeSha256(sourcePath);
+            var sourceBytes = File.ReadAllBytes(sourcePath);
+            var actualHash = ComputeSha256(sourceBytes);
             if (!string.Equals(actualHash, entry.Sha256, StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidDataException($"文档 {entry.Id} 的 SHA-256 与批准清单不一致。");
             }
 
-            var content = File.ReadAllText(sourcePath).TrimEnd('\r', '\n');
+            var content = StrictUtf8.GetString(sourceBytes).TrimEnd('\r', '\n');
             if (string.IsNullOrWhiteSpace(content))
             {
                 throw new InvalidDataException($"文档 {entry.Id} 的来源文件为空。");
@@ -75,7 +90,7 @@ public sealed class DocumentRepository
                 entry.SearchTerms));
         }
 
-        return new DocumentRepository(documents);
+        return new DocumentRepository(documents, manifest.SourceId, ComputeSha256(manifestBytes));
     }
 
     private static void ValidateManifest(ApprovedSourceManifest manifest)
@@ -164,9 +179,8 @@ public sealed class DocumentRepository
         }
     }
 
-    private static string ComputeSha256(string path)
+    private static string ComputeSha256(byte[] content)
     {
-        using var stream = File.OpenRead(path);
-        return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+        return Convert.ToHexString(SHA256.HashData(content)).ToLowerInvariant();
     }
 }

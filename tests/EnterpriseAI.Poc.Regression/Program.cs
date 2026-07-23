@@ -2,6 +2,7 @@ using EnterpriseAI.Poc;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.Extensions.DependencyInjection;
+using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
@@ -11,7 +12,8 @@ using System.Text.Json;
 var dataPath = Path.Combine(AppContext.BaseDirectory, "Data", "approved-source.json");
 var repository = DocumentRepository.LoadApprovedSnapshot(dataPath);
 var identities = new PocIdentityDirectory();
-var search = new PermissionAwareSearchService(repository);
+var traceSink = new InMemorySearchTraceSink();
+var search = new PermissionAwareSearchService(repository, traceSink);
 var failures = new List<string>();
 
 Run("REG-AUTH-001 未知身份不能解析", () =>
@@ -119,16 +121,103 @@ Run("REG-AUTH-002 Production 环境禁止启用测试身份", () =>
         () => PocApplication.Build(
             ["--GateF:PocIdentityEnabled=true"],
             repository,
-            "Production"),
+            "Production",
+            new InMemorySearchTraceSink()),
         "Production 环境启用了 X-Poc-User");
+});
+
+Run("REG-TRACE-001 回答 Trace 关联快照与授权引用", () =>
+{
+    var isolatedSink = new InMemorySearchTraceSink();
+    var isolatedSearch = new PermissionAwareSearchService(repository, isolatedSink);
+    var response = isolatedSearch.Query(Resolve("alice-finance"), "预算报销规则");
+    var trace = isolatedSink.Records.Single();
+
+    AssertEqual(response.TraceId, trace.TraceId, "响应与 Trace 标识不一致");
+    AssertEqual(repository.SourceId, trace.SnapshotSourceId, "Trace 缺少快照来源");
+    AssertEqual(repository.ManifestSha256, trace.SnapshotManifestSha256, "Trace 缺少清单哈希");
+    AssertEqual("doc-finance-001", trace.SelectedDocumentId!, "Trace 未关联已授权引用");
+    AssertEqual("answered", trace.Decision, "Trace 决策不正确");
+});
+
+Run("REG-TRACE-002 拒答 Trace 不泄漏问题原文或隐藏文档", () =>
+{
+    const string question = "预算报销规则";
+    var isolatedSink = new InMemorySearchTraceSink();
+    var isolatedSearch = new PermissionAwareSearchService(repository, isolatedSink);
+    var response = isolatedSearch.Query(Resolve("bob-hr"), question);
+    var trace = isolatedSink.Records.Single();
+    var serializedTrace = JsonSerializer.Serialize(trace);
+
+    AssertEqual("refused", response.Status, "跨部门请求未拒答");
+    AssertEqual("refused", trace.Decision, "拒答 Trace 决策不正确");
+    AssertTrue(trace.SelectedDocumentId is null, "拒答 Trace 包含文档标识");
+    AssertFalse(serializedTrace.Contains(question, StringComparison.Ordinal), "Trace 保存了问题原文");
+    AssertFalse(serializedTrace.Contains("doc-finance-001", StringComparison.Ordinal), "Trace 泄漏隐藏文档");
+});
+
+Run("REG-TRACE-003 并发写入保持连续哈希链", () =>
+{
+    WithTemporaryTraceFile(path =>
+    {
+        var fileSink = new HashChainedJsonLineTraceSink(path);
+        Parallel.For(0, 32, index => fileSink.Record(CreateTraceRecord(index)));
+        var validation = HashChainedJsonLineTraceSink.Validate(path);
+        AssertEqual(32L, validation.EntryCount, "并发 Trace 条目数不正确");
+        AssertFalse(
+            string.Equals(validation.FinalHash, HashChainedJsonLineTraceSink.GenesisHash, StringComparison.Ordinal),
+            "并发 Trace 未形成哈希链");
+    });
+});
+
+Run("REG-SRC-005 来源文件不是有效 UTF-8 时拒绝启动", () =>
+{
+    byte[] invalidUtf8 = [0xc3, 0x28];
+    WithTemporaryBinarySnapshot(
+        fileContent: invalidUtf8,
+        relativePath: "fixtures/document.md",
+        allowedGroups: ["employees"],
+        approvedHash: ComputeSha256Bytes(invalidUtf8),
+        manifestPath => ExpectThrows<DecoderFallbackException>(
+            () => DocumentRepository.LoadApprovedSnapshot(manifestPath),
+            "无效 UTF-8 来源文件被接受"));
+});
+
+Run("REG-TRACE-004 Trace 被篡改时校验失败", () =>
+{
+    WithTemporaryTraceFile(path =>
+    {
+        var fileSink = new HashChainedJsonLineTraceSink(path);
+        fileSink.Record(CreateTraceRecord(1));
+        fileSink.Record(CreateTraceRecord(2));
+        var content = File.ReadAllText(path);
+        File.WriteAllText(
+            path,
+            content.Replace("authorized_evidence_found", "tampered_evidence", StringComparison.Ordinal),
+            new UTF8Encoding(false));
+
+        ExpectThrows<InvalidDataException>(
+            () => HashChainedJsonLineTraceSink.Validate(path),
+            "被篡改的 Trace 哈希链通过校验");
+    });
+});
+
+Run("REG-TRACE-005 Trace 写入失败时检索失败关闭", () =>
+{
+    var failingSearch = new PermissionAwareSearchService(repository, new FailingSearchTraceSink());
+    ExpectThrows<IOException>(
+        () => failingSearch.Query(Resolve("alice-finance"), "预算规则"),
+        "Trace 写入失败后仍返回检索结果");
 });
 
 await RunAsync("REG-API-001 HTTP 契约执行身份、ACL 与输入边界", async () =>
 {
+    var apiTraceSink = new InMemorySearchTraceSink();
     await using var application = PocApplication.Build(
         ["--GateF:PocIdentityEnabled=true"],
         repository,
-        "Development");
+        "Development",
+        apiTraceSink);
     application.Urls.Add("http://127.0.0.1:0");
     await application.StartAsync();
 
@@ -178,7 +267,11 @@ await RunAsync("REG-API-001 HTTP 契约执行身份、ACL 与输入边界", asyn
     using var tenantInjectionResponse = await client.SendAsync(tenantInjection);
     AssertEqual(HttpStatusCode.BadRequest, tenantInjectionResponse.StatusCode, "客户端 Tenant 注入未被拒绝");
 
-    await using var productionApplication = PocApplication.Build([], repository, "Production");
+    await using var productionApplication = PocApplication.Build(
+        [],
+        repository,
+        "Production",
+        new InMemorySearchTraceSink());
     productionApplication.Urls.Add("http://127.0.0.1:0");
     await productionApplication.StartAsync();
     var productionAddresses = productionApplication.Services
@@ -212,7 +305,7 @@ if (failures.Count > 0)
     return 1;
 }
 
-Console.WriteLine("REGRESSION_TESTS=PASS count=13");
+Console.WriteLine("REGRESSION_TESTS=PASS count=19");
 return 0;
 
 void Run(string name, Action test)
@@ -308,13 +401,28 @@ static void WithTemporarySnapshot(
     string approvedHash,
     Action<string> test)
 {
+    WithTemporaryBinarySnapshot(
+        Encoding.UTF8.GetBytes(fileContent),
+        relativePath,
+        allowedGroups,
+        approvedHash,
+        test);
+}
+
+static void WithTemporaryBinarySnapshot(
+    byte[] fileContent,
+    string relativePath,
+    string[] allowedGroups,
+    string approvedHash,
+    Action<string> test)
+{
     var regressionRoot = Path.Combine(
         Path.GetTempPath(),
         "enterprise-ai-poc-regression",
         Guid.NewGuid().ToString("N"));
     var fixtureDirectory = Path.Combine(regressionRoot, "fixtures");
     Directory.CreateDirectory(fixtureDirectory);
-    File.WriteAllText(Path.Combine(fixtureDirectory, "document.md"), fileContent, new UTF8Encoding(false));
+    File.WriteAllBytes(Path.Combine(fixtureDirectory, "document.md"), fileContent);
 
     var manifest = new ApprovedSourceManifest(
         "regression-snapshot",
@@ -356,5 +464,63 @@ static void WithTemporarySnapshot(
 
 static string ComputeSha256(string content)
 {
-    return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content))).ToLowerInvariant();
+    return ComputeSha256Bytes(Encoding.UTF8.GetBytes(content));
+}
+
+static string ComputeSha256Bytes(byte[] content)
+{
+    return Convert.ToHexString(SHA256.HashData(content)).ToLowerInvariant();
+}
+
+static void WithTemporaryTraceFile(Action<string> test)
+{
+    var regressionRoot = Path.Combine(
+        Path.GetTempPath(),
+        "enterprise-ai-trace-regression",
+        Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(regressionRoot);
+    var tracePath = Path.Combine(regressionRoot, "search-traces.jsonl");
+
+    try
+    {
+        test(tracePath);
+    }
+    finally
+    {
+        var expectedParent = Path.GetFullPath(Path.Combine(
+            Path.GetTempPath(),
+            "enterprise-ai-trace-regression")) + Path.DirectorySeparatorChar;
+        var resolvedRoot = Path.GetFullPath(regressionRoot);
+        if (resolvedRoot.StartsWith(expectedParent, StringComparison.OrdinalIgnoreCase))
+        {
+            Directory.Delete(resolvedRoot, recursive: true);
+        }
+    }
+}
+
+static SearchTraceRecord CreateTraceRecord(int index)
+{
+    return new SearchTraceRecord(
+        PermissionAwareSearchService.TraceSchemaVersion,
+        index.ToString("x32", CultureInfo.InvariantCulture),
+        DateTimeOffset.UnixEpoch.AddSeconds(index),
+        "regression-user",
+        PocIdentityDirectory.EnterpriseTenantId,
+        ["employees"],
+        ComputeSha256($"question-{index}"),
+        "regression-snapshot",
+        new string('a', 64),
+        PermissionAwareSearchService.PolicyVersion,
+        "answered",
+        "authorized_evidence_found",
+        "regression-document",
+        1);
+}
+
+file sealed class FailingSearchTraceSink : ISearchTraceSink
+{
+    public void Record(SearchTraceRecord record)
+    {
+        throw new IOException("模拟 Trace 写入失败。");
+    }
 }

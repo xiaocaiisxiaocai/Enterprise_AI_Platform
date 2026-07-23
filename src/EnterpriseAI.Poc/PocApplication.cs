@@ -7,7 +7,8 @@ public static class PocApplication
     public static WebApplication Build(
         string[] args,
         DocumentRepository? repository = null,
-        string? environmentName = null)
+        string? environmentName = null,
+        ISearchTraceSink? traceSink = null)
     {
         var options = string.IsNullOrWhiteSpace(environmentName)
             ? new WebApplicationOptions { Args = args }
@@ -30,6 +31,8 @@ public static class PocApplication
         builder.Services.AddSingleton<PocIdentityDirectory>();
         builder.Services.AddSingleton(repository ?? DocumentRepository.LoadApprovedSnapshot(
             Path.Combine(builder.Environment.ContentRootPath, "Data", "approved-source.json")));
+        builder.Services.AddSingleton(traceSink ?? new HashChainedJsonLineTraceSink(
+            Path.Combine(builder.Environment.ContentRootPath, ".gate-f", "search-traces.jsonl")));
         builder.Services.AddSingleton<PermissionAwareSearchService>();
 
         var application = builder.Build();

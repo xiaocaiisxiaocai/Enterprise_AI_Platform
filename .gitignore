@@ -4,3 +4,5 @@
 TestResults/
 *.user
 *.suo
+.gate-f/
+artifacts/

@@ -2,7 +2,7 @@
 
 ## 项目结构与模块组织
 
-本仓库包含企业 AI 平台目标设计与 Gate F 权限感知检索 PoC。27 个架构 Markdown 文件位于 `docs\`，`README.md` 是运行入口。`src\EnterpriseAI.Poc` 提供 .NET 8 最小 API、批准快照清单、合成来源文件和权限预过滤；`tests\EnterpriseAI.Poc.Regression` 是无外部服务的回归执行器。`scripts\Validate-Docs.ps1` 校验文档，`.github\workflows\docs-quality.yml` 在 push 和 PR 时执行文档及 PoC 门禁。新增设计主题使用 `NN_主题.md` 并同步索引。
+本仓库包含企业 AI 平台目标设计与 Gate F 权限感知检索 PoC。27 个架构 Markdown 文件位于 `docs\`，`README.md` 是运行入口。`src\EnterpriseAI.Poc` 提供 .NET 8 最小 API、批准快照、权限预过滤和本地哈希链 Trace；`tests\EnterpriseAI.Poc.Regression` 是无外部服务的回归执行器。`scripts\Validate-Docs.ps1` 校验文档，`scripts\Export-GateFEvidence.ps1` 生成本地证据包；`.github\workflows\docs-quality.yml` 在 push 和 PR 时执行门禁。新增设计主题使用 `NN_主题.md` 并同步索引。
 
 ## 架构约束
 
@@ -14,6 +14,7 @@
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Validate-Docs.ps1 -SelfTest
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Export-GateFEvidence.ps1
 dotnet restore .\tests\EnterpriseAI.Poc.Regression\EnterpriseAI.Poc.Regression.csproj
 dotnet build .\tests\EnterpriseAI.Poc.Regression\EnterpriseAI.Poc.Regression.csproj --configuration Release --no-restore
 dotnet run --project .\tests\EnterpriseAI.Poc.Regression\EnterpriseAI.Poc.Regression.csproj --configuration Release --no-build
@@ -22,7 +23,7 @@ rg -n 'TODO|FIXME|TBD|待定' .\docs
 rg -n '^#|^```' .\docs
 ```
 
-文档脚本先证明校验器能拒绝损坏样例，再检查标题、围栏、相对链接、JSON、版本和标识一致性。PoC 构建启用警告即错误；回归执行器验证身份、部门 ACL、固定 Tenant、拒答、引用和真实 HTTP 绑定。还需人工预览 Markdown/Mermaid 并验证 YAML 语义。
+文档脚本先证明校验器能拒绝损坏样例，再检查标题、围栏、相对链接、JSON、版本和标识一致性。证据脚本重新执行 Release 构建、19 条回归和文档门禁，并记录 commit、环境与来源哈希。PoC 构建启用警告即错误；还需人工预览 Markdown/Mermaid 并验证 YAML 语义。
 
 ## 编写风格与命名
 

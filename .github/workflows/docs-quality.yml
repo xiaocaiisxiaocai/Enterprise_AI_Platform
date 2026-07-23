@@ -4,7 +4,7 @@ on:
   push:
     paths:
       - "**/*.md"
-      - "scripts/Validate-Docs.ps1"
+      - "scripts/**"
       - "src/**"
       - "tests/**"
       - "global.json"
@@ -13,7 +13,7 @@ on:
   pull_request:
     paths:
       - "**/*.md"
-      - "scripts/Validate-Docs.ps1"
+      - "scripts/**"
       - "src/**"
       - "tests/**"
       - "global.json"
@@ -44,9 +44,12 @@ jobs:
         uses: actions/setup-dotnet@v5
         with:
           dotnet-version: "8.0.x"
-      - name: Restore
-        run: dotnet restore tests/EnterpriseAI.Poc.Regression/EnterpriseAI.Poc.Regression.csproj
-      - name: Build
-        run: dotnet build tests/EnterpriseAI.Poc.Regression/EnterpriseAI.Poc.Regression.csproj --configuration Release --no-restore
-      - name: Run Gate F regression tests
-        run: dotnet run --project tests/EnterpriseAI.Poc.Regression/EnterpriseAI.Poc.Regression.csproj --configuration Release --no-build
+      - name: Verify Gate F and export evidence
+        shell: pwsh
+        run: ./scripts/Export-GateFEvidence.ps1 -OutputPath artifacts/gate-f-evidence.json -RequireCleanWorktree
+      - name: Upload Gate F evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: gate-f-evidence-${{ github.sha }}
+          path: artifacts/gate-f-evidence.json
+          if-no-files-found: error

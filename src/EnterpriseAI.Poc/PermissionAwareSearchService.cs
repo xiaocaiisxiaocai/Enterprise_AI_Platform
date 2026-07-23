@@ -1,10 +1,16 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace EnterpriseAI.Poc;
 
-public sealed class PermissionAwareSearchService(DocumentRepository repository)
+public sealed class PermissionAwareSearchService(
+    DocumentRepository repository,
+    ISearchTraceSink traceSink)
 {
     public const string RefusalMessage = "未找到您有权访问且能够回答该问题的证据。";
+    public const string TraceSchemaVersion = "1.0";
+    public const string PolicyVersion = "gate-f-acl-v1";
 
     public QueryResponse Query(PocIdentity identity, string question)
     {
@@ -22,6 +28,14 @@ public sealed class PermissionAwareSearchService(DocumentRepository repository)
         var traceId = ActivityTraceId.CreateRandom().ToString();
         if (matches.Length == 0)
         {
+            RecordTrace(
+                identity,
+                question,
+                traceId,
+                "refused",
+                "no_authorized_evidence",
+                selectedDocumentId: null,
+                citationCount: 0);
             return new QueryResponse("refused", RefusalMessage, [], traceId);
         }
 
@@ -33,8 +47,46 @@ public sealed class PermissionAwareSearchService(DocumentRepository repository)
             evidence.Section,
             evidence.SourcePath);
 
+        RecordTrace(
+            identity,
+            question,
+            traceId,
+            "answered",
+            "authorized_evidence_found",
+            evidence.Id,
+            citationCount: 1);
+
         // Gate F 只返回抽取式证据，不调用模型生成答案。
         return new QueryResponse("answered", evidence.Content, [citation], traceId);
+    }
+
+    private void RecordTrace(
+        PocIdentity identity,
+        string question,
+        string traceId,
+        string decision,
+        string reasonCode,
+        string? selectedDocumentId,
+        int citationCount)
+    {
+        var questionHash = Convert.ToHexString(
+                SHA256.HashData(Encoding.UTF8.GetBytes(question.Trim())))
+            .ToLowerInvariant();
+        traceSink.Record(new SearchTraceRecord(
+            TraceSchemaVersion,
+            traceId,
+            DateTimeOffset.UtcNow,
+            identity.PrincipalId,
+            identity.TenantId,
+            identity.Groups.Order(StringComparer.Ordinal).ToArray(),
+            questionHash,
+            repository.SourceId,
+            repository.ManifestSha256,
+            PolicyVersion,
+            decision,
+            reasonCode,
+            selectedDocumentId,
+            citationCount));
     }
 
     private static bool CanRead(PocIdentity identity, DocumentRecord document) =>
