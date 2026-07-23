@@ -27,7 +27,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Export-GateFEviden
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-GateFEvidence.ps1 -EvidencePath .\artifacts\gate-f-evidence.json
 ```
 
-两条命令成功时均输出 `GATE_F_SUMMARY`（commit、回归计数、Golden 计数、越权引用数、数据集哈希、Trace 最终哈希与限制声明）。日志中预期的 4xx 是断言边界，不是未处理失败。
+两条命令成功时均输出 `GATE_F_SUMMARY`（commit、回归计数、Golden 计数、越权引用数、数据集哈希、Trace 最终哈希、摄取 Checkpoint 哈希与限制声明）。Evidence 的 `ingestion` 节固定记录 2 个导入、1 个更新、1 个删除、1 个隔离和删除对账通过；这些是合成确定性夹具，不是业务吞吐指标。日志中预期的 4xx 是断言边界，不是未处理失败。
 
 ## 本地运行与分项检查
 

@@ -18,6 +18,7 @@ public sealed class LocalFileIngestionService
     private readonly LocalStateStore? _stateStore;
     private readonly LocalFileIngestionLimits _limits;
     private Dictionary<string, IngestedFileState> _published = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, string> _quarantined = new(StringComparer.OrdinalIgnoreCase);
 
     public LocalFileIngestionService(
         DocumentRepository repository,
@@ -143,6 +144,10 @@ public sealed class LocalFileIngestionService
                 removedIds);
             PersistCheckpointChanges(candidates, quarantine);
             _published = candidates;
+            _quarantined = quarantine.ToDictionary(
+                item => item.RelativePath,
+                item => item.ReasonCode,
+                StringComparer.OrdinalIgnoreCase);
 
             return new LocalFileIngestionResult(
                 added,
@@ -359,14 +364,26 @@ public sealed class LocalFileIngestionService
                     stateEvent.TargetId,
                     contentHash,
                     Document: null);
+                _quarantined.Remove(relativePath);
             }
-            else if (stateEvent.EventType is "ingestion_file_removed" or "ingestion_file_quarantined")
+            else if (stateEvent.EventType == "ingestion_file_quarantined")
             {
                 if (stateEvent.RelativePath is null)
                 {
-                    throw new InvalidDataException("摄取删除/隔离事件缺少相对路径。");
+                    throw new InvalidDataException("摄取隔离事件缺少相对路径。");
                 }
                 _published.Remove(stateEvent.RelativePath);
+                _quarantined[stateEvent.RelativePath] = stateEvent.ReasonCode
+                    ?? throw new InvalidDataException("摄取隔离事件缺少原因。");
+            }
+            else if (stateEvent.EventType == "ingestion_file_removed")
+            {
+                if (stateEvent.RelativePath is null)
+                {
+                    throw new InvalidDataException("摄取删除事件缺少相对路径。");
+                }
+                _published.Remove(stateEvent.RelativePath);
+                _quarantined.Remove(stateEvent.RelativePath);
             }
         }
     }
@@ -401,27 +418,46 @@ public sealed class LocalFileIngestionService
         var quarantineByPath = quarantine.ToDictionary(
             item => item.RelativePath,
             StringComparer.OrdinalIgnoreCase);
+        foreach (var item in quarantine.OrderBy(
+            item => item.RelativePath,
+            StringComparer.Ordinal))
+        {
+            if (_quarantined.TryGetValue(item.RelativePath, out var previousReason) &&
+                string.Equals(previousReason, item.ReasonCode, StringComparison.Ordinal))
+            {
+                continue;
+            }
+            _stateStore.Append(new LocalStateEvent(
+                "ingestion_file_quarantined",
+                CreateDocumentId(_options.SourceId, item.RelativePath),
+                _options.SourceId,
+                RelativePath: item.RelativePath,
+                ReasonCode: item.ReasonCode));
+        }
         foreach (var previous in _published
             .Where(pair => !candidates.ContainsKey(pair.Key))
             .OrderBy(pair => pair.Key, StringComparer.Ordinal))
         {
-            if (quarantineByPath.TryGetValue(previous.Key, out var item))
-            {
-                _stateStore.Append(new LocalStateEvent(
-                    "ingestion_file_quarantined",
-                    previous.Value.DocumentId,
-                    _options.SourceId,
-                    RelativePath: previous.Key,
-                    ReasonCode: item.ReasonCode));
-            }
-            else
+            if (!quarantineByPath.ContainsKey(previous.Key))
             {
                 _stateStore.Append(new LocalStateEvent(
                     "ingestion_file_removed",
                     previous.Value.DocumentId,
                     _options.SourceId,
-                    RelativePath: previous.Key));
+                RelativePath: previous.Key));
             }
+        }
+        foreach (var previous in _quarantined
+            .Where(pair =>
+                !candidates.ContainsKey(pair.Key) &&
+                !quarantineByPath.ContainsKey(pair.Key))
+            .OrderBy(pair => pair.Key, StringComparer.Ordinal))
+        {
+            _stateStore.Append(new LocalStateEvent(
+                "ingestion_file_removed",
+                CreateDocumentId(_options.SourceId, previous.Key),
+                _options.SourceId,
+                RelativePath: previous.Key));
         }
     }
 

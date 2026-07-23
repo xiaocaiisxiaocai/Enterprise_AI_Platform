@@ -448,6 +448,28 @@ try {
     if ($testIds.Count -ne 92 -or $null -eq $regressionSummary) {
         throw "回归输出与 92 条 Gate F/F.1/本地状态、Worker 与摄取契约不一致。"
     }
+    $ingestionEvidenceLine = @($regressionOutput | Where-Object {
+        $_.ToString() -match '^INGESTION_EVIDENCE '
+    })
+    if ($ingestionEvidenceLine.Count -ne 1) {
+        throw "回归输出缺少唯一 INGESTION_EVIDENCE 摘要。"
+    }
+    try {
+        $ingestionEvidenceRaw = $ingestionEvidenceLine[0].ToString()
+        $ingestionEvidenceJson = $ingestionEvidenceRaw.Substring('INGESTION_EVIDENCE '.Length)
+        $ingestionEvidence = $ingestionEvidenceJson | ConvertFrom-Json -ErrorAction Stop
+    }
+    catch {
+        throw "INGESTION_EVIDENCE 摘要不是有效 JSON。"
+    }
+    if ([int]$ingestionEvidence.imported_count -ne 2 -or
+        [int]$ingestionEvidence.updated_count -ne 1 -or
+        [int]$ingestionEvidence.removed_count -ne 1 -or
+        [int]$ingestionEvidence.quarantined_count -ne 1 -or
+        $ingestionEvidence.reconciliation_passed -ne $true -or
+        $ingestionEvidence.checkpoint_final_hash -notmatch '^[0-9a-f]{64}$') {
+        throw "INGESTION_EVIDENCE 未满足固定摄取与对账契约。"
+    }
 
     $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
     $dataRoot = Split-Path -Parent $manifestPath
@@ -526,6 +548,15 @@ try {
             report_artifact = $stagingReportFileName
             trace_artifact = $evaluation.trace_artifact_file
         }
+        ingestion = [ordered]@{
+            type = "local-file-deterministic"
+            imported_count = [int]$ingestionEvidence.imported_count
+            updated_count = [int]$ingestionEvidence.updated_count
+            removed_count = [int]$ingestionEvidence.removed_count
+            quarantined_count = [int]$ingestionEvidence.quarantined_count
+            reconciliation_passed = [bool]$ingestionEvidence.reconciliation_passed
+            checkpoint_final_hash = $ingestionEvidence.checkpoint_final_hash
+        }
         verification = [ordered]@{
             restore = "Passed"
             release_build = "Passed"
@@ -571,6 +602,7 @@ try {
         "unauthorized_citations=$($evaluation.metrics.unauthorized_citation_count) " +
         "dataset_sha256=$($evaluation.dataset_sha256) " +
         "trace_final_hash=$($evaluation.trace_final_hash) " +
+        "ingestion_checkpoint_hash=$($ingestionEvidence.checkpoint_final_hash) " +
         "limitations=local-deterministic-only;no-oidc;no-sharepoint;no-probabilistic-ai-eval"
     )
 }

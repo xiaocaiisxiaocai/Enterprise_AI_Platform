@@ -280,6 +280,38 @@ function Test-GateFEvidenceBundle {
         }
     }
 
+    $ingestion = Get-RequiredProperty $bundle 'ingestion' $errors 'root'
+    if ($null -ne $ingestion) {
+        $ingestionType = Get-RequiredProperty $ingestion 'type' $errors 'ingestion'
+        $importedCount = Get-RequiredProperty $ingestion 'imported_count' $errors 'ingestion'
+        $updatedCount = Get-RequiredProperty $ingestion 'updated_count' $errors 'ingestion'
+        $removedCount = Get-RequiredProperty $ingestion 'removed_count' $errors 'ingestion'
+        $quarantinedCount = Get-RequiredProperty $ingestion 'quarantined_count' $errors 'ingestion'
+        $reconciliationPassed = Get-RequiredProperty $ingestion 'reconciliation_passed' $errors 'ingestion'
+        $checkpointHash = Get-RequiredProperty $ingestion 'checkpoint_final_hash' $errors 'ingestion'
+        if ($null -ne $ingestionType -and $ingestionType -ne 'local-file-deterministic') {
+            [void]$errors.Add("INGESTION: 未知类型 $ingestionType")
+        }
+        if ($null -ne $importedCount -and [int]$importedCount -ne 2) {
+            [void]$errors.Add("INGESTION: imported_count 必须为 2")
+        }
+        if ($null -ne $updatedCount -and [int]$updatedCount -ne 1) {
+            [void]$errors.Add("INGESTION: updated_count 必须为 1")
+        }
+        if ($null -ne $removedCount -and [int]$removedCount -ne 1) {
+            [void]$errors.Add("INGESTION: removed_count 必须为 1")
+        }
+        if ($null -ne $quarantinedCount -and [int]$quarantinedCount -ne 1) {
+            [void]$errors.Add("INGESTION: quarantined_count 必须为 1")
+        }
+        if ($null -ne $reconciliationPassed -and $reconciliationPassed -ne $true) {
+            [void]$errors.Add("INGESTION: reconciliation_passed 必须为 true")
+        }
+        if ($null -ne $checkpointHash -and -not (Test-Sha256Hex $checkpointHash)) {
+            [void]$errors.Add("HASH: ingestion.checkpoint_final_hash 格式无效")
+        }
+    }
+
     $verification = Get-RequiredProperty $bundle 'verification' $errors 'root'
     if ($null -ne $verification) {
         foreach ($field in @('restore', 'release_build', 'regression', 'docs_validation', 'deterministic_evaluation')) {
@@ -582,6 +614,15 @@ function New-ValidEvidenceFixture {
             report_artifact = $reportFileName
             trace_artifact = $traceFileName
         }
+        ingestion = [ordered]@{
+            type = 'local-file-deterministic'
+            imported_count = 2
+            updated_count = 1
+            removed_count = 1
+            quarantined_count = 1
+            reconciliation_passed = $true
+            checkpoint_final_hash = ('a' * 64)
+        }
         verification = [ordered]@{
             restore = 'Passed'
             release_build = 'Passed'
@@ -694,6 +735,17 @@ function Invoke-EvidenceValidatorSelfTest {
                 }
                 Expect = 'ARTIFACT:*entryHash*'
             }
+            @{
+                Name = 'ingestion-checkpoint-tamper'
+                Mutate = {
+                    param($dir)
+                    $path = Join-Path $dir 'gate-f-evidence.json'
+                    $obj = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+                    $obj.ingestion.checkpoint_final_hash = 'invalid'
+                    [IO.File]::WriteAllText($path, ($obj | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
+                }
+                Expect = 'HASH:*ingestion*'
+            }
         )
 
         foreach ($case in $cases) {
@@ -712,7 +764,7 @@ function Invoke-EvidenceValidatorSelfTest {
             Write-Host "SELF_TEST_CASE=PASS name=$($case.Name)"
         }
 
-        Write-Host 'SELF_TEST=PASS (valid evidence accepted; field/schema/count/hash/path/trace content failures rejected)'
+        Write-Host 'SELF_TEST=PASS (valid evidence accepted; field/schema/count/hash/path/trace/ingestion failures rejected)'
     }
     finally {
         $resolvedFixture = [IO.Path]::GetFullPath($fixtureRoot)
@@ -756,6 +808,7 @@ try {
         "unauthorized_citations=$($bundle.evaluation.unauthorized_citation_count) " +
         "dataset_sha256=$($bundle.evaluation.dataset_sha256) " +
         "trace_final_hash=$($bundle.evaluation.trace_final_hash) " +
+        "ingestion_checkpoint_hash=$($bundle.ingestion.checkpoint_final_hash) " +
         "limitations=offline-verify-only;local-deterministic-contract"
     )
 }

@@ -1425,6 +1425,10 @@ if (failures.Count > 0)
     return 1;
 }
 
+var ingestionEvidence = BuildIngestionEvidence();
+Console.WriteLine(
+    "INGESTION_EVIDENCE " +
+    JsonSerializer.Serialize(ingestionEvidence));
 const int ExpectedRegressionCount = 92;
 Console.WriteLine($"REGRESSION_TESTS=PASS count={ExpectedRegressionCount}");
 WriteFullGateFSummary(
@@ -1900,6 +1904,48 @@ static void WriteFullGateFSummary(
         $"dataset_sha256={datasetSha256} " +
         $"trace_final_hash={traceFinalHash} " +
         $"limitations={limitations}");
+}
+
+static object BuildIngestionEvidence()
+{
+    var dataPath = Path.Combine(AppContext.BaseDirectory, "Data", "approved-source.json");
+    object? summary = null;
+    WithTemporaryStateRoot(stateRoot =>
+    WithTemporaryIngestionRoot(root =>
+    {
+        File.WriteAllText(
+            Path.Combine(root, "alpha.md"),
+            "# Alpha\nAlpha 初始内容",
+            new UTF8Encoding(false));
+        File.WriteAllText(
+            Path.Combine(root, "beta.txt"),
+            "Beta 将被删除",
+            new UTF8Encoding(false));
+        File.WriteAllBytes(Path.Combine(root, "invalid.txt"), [0x41, 0x00, 0x42]);
+        var store = new LocalStateStore(stateRoot);
+        var repository = DocumentRepository.LoadApprovedSnapshot(dataPath, store);
+        var ingestion = CreateIngestion(repository, root, ["employees"], store);
+        var first = ingestion.Synchronize();
+
+        File.WriteAllText(
+            Path.Combine(root, "alpha.md"),
+            "# Alpha\nAlpha 更新内容",
+            new UTF8Encoding(false));
+        File.Delete(Path.Combine(root, "beta.txt"));
+        var second = ingestion.Synchronize();
+        var reconciled = !repository.Documents.Any(document =>
+            document.Content.Contains("Beta 将被删除", StringComparison.Ordinal));
+        summary = new
+        {
+            imported_count = first.Added,
+            updated_count = second.Updated,
+            removed_count = second.Removed,
+            quarantined_count = second.Quarantined.Count,
+            reconciliation_passed = reconciled,
+            checkpoint_final_hash = second.CheckpointHash
+        };
+    }));
+    return summary ?? throw new InvalidOperationException("无法生成摄取证据摘要。");
 }
 
 static HttpRequestMessage CreateQueryRequest(string user, string question)
