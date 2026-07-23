@@ -408,6 +408,17 @@ try {
         -StagingTracePath $stagingTracePath
 
     Write-Host "GATE_F_EVIDENCE=PASS path=$resolvedOutputPath"
+    Write-Host (
+        "GATE_F_SUMMARY " +
+        "commit=$commitSha " +
+        "worktree_clean=$worktreeClean " +
+        "regression_count=$($testIds.Count) " +
+        "golden_cases=$($evaluation.metrics.total_cases)/$($evaluation.metrics.passed_cases) " +
+        "unauthorized_citations=$($evaluation.metrics.unauthorized_citation_count) " +
+        "dataset_sha256=$($evaluation.dataset_sha256) " +
+        "trace_final_hash=$($evaluation.trace_final_hash) " +
+        "limitations=local-deterministic-only;no-oidc;no-sharepoint;no-probabilistic-ai-eval"
+    )
 }
 catch {
     Write-Error $_

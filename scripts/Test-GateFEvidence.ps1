@@ -613,4 +613,20 @@ if (-not $result.Ok) {
 }
 
 Write-Host "GATE_F_EVIDENCE_TEST=PASS path=$($result.EvidencePath)"
+try {
+    $bundle = Get-Content -LiteralPath $result.EvidencePath -Raw -Encoding UTF8 | ConvertFrom-Json
+    Write-Host (
+        "GATE_F_SUMMARY " +
+        "commit=$($bundle.commit_sha) " +
+        "regression_count=$($bundle.verification.regression_count) " +
+        "golden_cases=$($bundle.evaluation.passed_cases)/$($bundle.evaluation.total_cases) " +
+        "unauthorized_citations=$($bundle.evaluation.unauthorized_citation_count) " +
+        "dataset_sha256=$($bundle.evaluation.dataset_sha256) " +
+        "trace_final_hash=$($bundle.evaluation.trace_final_hash) " +
+        "limitations=offline-verify-only;local-deterministic-contract"
+    )
+}
+catch {
+    # 摘要失败不掩盖已通过的字段校验。
+}
 exit 0

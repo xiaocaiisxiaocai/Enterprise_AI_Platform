@@ -53,6 +53,13 @@ try
         $"cases={report.Metrics.PassedCases}/{report.Metrics.TotalCases} " +
         $"unauthorized_citations={report.Metrics.UnauthorizedCitationCount} " +
         $"trace_final_hash={report.TraceFinalHash}");
+    Console.WriteLine(
+        "GATE_F_SUMMARY " +
+        $"dataset_sha256={report.DatasetSha256} " +
+        $"golden_cases={report.Metrics.PassedCases}/{report.Metrics.TotalCases} " +
+        $"unauthorized_citations={report.Metrics.UnauthorizedCitationCount} " +
+        $"trace_final_hash={report.TraceFinalHash} " +
+        "limitations=local-deterministic-only;no-probabilistic-ai-eval");
     return passed ? 0 : 1;
 }
 catch (Exception exception)

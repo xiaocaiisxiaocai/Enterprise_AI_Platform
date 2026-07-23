@@ -723,6 +723,11 @@ if (failures.Count > 0)
 
 const int ExpectedRegressionCount = 57;
 Console.WriteLine($"REGRESSION_TESTS=PASS count={ExpectedRegressionCount}");
+Console.WriteLine(
+    "GATE_F_SUMMARY " +
+    $"regression_count={ExpectedRegressionCount} " +
+    "scope=local-deterministic-contract " +
+    "limitations=no-oidc;no-sharepoint;no-probabilistic-ai-eval;expected-4xx-are-asserted-boundaries");
 return 0;
 
 void Run(string name, Action test)
