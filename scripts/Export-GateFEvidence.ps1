@@ -57,7 +57,7 @@ function Publish-GateFArtifacts {
         [Parameter(Mandatory)][string]$StagingTracePath
     )
 
-    $finalReportPath = Join-Path $OutputDirectory "gate-f-evaluation.json"
+    $finalReportPath = Join-Path $OutputDirectory (Split-Path -Leaf $StagingReportPath)
     $finalTracePath = Join-Path $OutputDirectory (Split-Path -Leaf $StagingTracePath)
 
     foreach ($source in @($StagingEvidencePath, $StagingReportPath, $StagingTracePath)) {
@@ -66,10 +66,20 @@ function Publish-GateFArtifacts {
         }
     }
 
-    # 同卷 Move-Item 近似原子替换正式文件；失败不删除历史正式证据。
-    Move-Item -LiteralPath $StagingEvidencePath -Destination $FinalEvidencePath -Force
-    Move-Item -LiteralPath $StagingReportPath -Destination $finalReportPath -Force
-    Move-Item -LiteralPath $StagingTracePath -Destination $finalTracePath -Force
+    if (Test-Path -LiteralPath $FinalEvidencePath -PathType Container) {
+        throw "正式 Evidence 路径不能是目录：$FinalEvidencePath"
+    }
+    foreach ($destination in @($finalReportPath, $finalTracePath)) {
+        if (Test-Path -LiteralPath $destination) {
+            throw "版本化制品目标已存在，拒绝覆盖：$destination"
+        }
+    }
+
+    # Report/Trace 使用不可变版本化名称；Evidence 最后移动，作为唯一原子提交指针。
+    # 前两步失败只会留下未被正式 Evidence 引用的孤立文件，不破坏上一版证据包。
+    Move-Item -LiteralPath $StagingTracePath -Destination $finalTracePath -ErrorAction Stop
+    Move-Item -LiteralPath $StagingReportPath -Destination $finalReportPath -ErrorAction Stop
+    Move-Item -LiteralPath $StagingEvidencePath -Destination $FinalEvidencePath -Force -ErrorAction Stop
 }
 
 function Invoke-ExportAtomicitySelfTest {
@@ -85,7 +95,7 @@ function Invoke-ExportAtomicitySelfTest {
         # 1) 成功路径：暂存后发布，正式文件更新
         $staging = New-GateFStagingDirectory -OutputDirectory $outputDirectory
         $stageEvidence = Join-Path $staging "gate-f-evidence.json"
-        $stageReport = Join-Path $staging "gate-f-evaluation.json"
+        $stageReport = Join-Path $staging "gate-f-evaluation-selftest.json"
         $stageTrace = Join-Path $staging "gate-f-evaluation-traces-selftest.jsonl"
         [IO.File]::WriteAllText($stageEvidence, '{"status":"PassedLocalContract","fresh":true}', [Text.UTF8Encoding]::new($false))
         [IO.File]::WriteAllText($stageReport, '{"status":"PassedLocalDeterministicEvaluation"}', [Text.UTF8Encoding]::new($false))
@@ -167,7 +177,45 @@ function Invoke-ExportAtomicitySelfTest {
         }
         Write-Host "SELF_TEST_CASE=PASS name=incomplete-staging-rejected"
 
-        # 5) 模拟评测失败：暂存中写入不完整评测输出后失败清理，正式证据保持上一次完整版
+        # 5) 发布目标冲突必须在移动任何制品前失败，上一版正式 Evidence 保持不变。
+        $stagingConflict = New-GateFStagingDirectory -OutputDirectory $outputDirectory
+        $conflictEvidence = Join-Path $stagingConflict "gate-f-evidence.json"
+        $conflictReport = Join-Path $stagingConflict "gate-f-evaluation-conflict.json"
+        $conflictTrace = Join-Path $stagingConflict "gate-f-evaluation-traces-conflict.jsonl"
+        [IO.File]::WriteAllText($conflictEvidence, '{"status":"PassedLocalContract","conflict":true}', [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($conflictReport, '{"status":"PassedLocalDeterministicEvaluation"}', [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($conflictTrace, '{"sequence":1}', [Text.UTF8Encoding]::new($false))
+        $conflictDestination = Join-Path $outputDirectory (Split-Path -Leaf $conflictReport)
+        New-Item -ItemType Directory -Path $conflictDestination -Force | Out-Null
+        $conflictRejected = $false
+        try {
+            Publish-GateFArtifacts `
+                -StagingDirectory $stagingConflict `
+                -OutputDirectory $outputDirectory `
+                -FinalEvidencePath $finalEvidence `
+                -StagingEvidencePath $conflictEvidence `
+                -StagingReportPath $conflictReport `
+                -StagingTracePath $conflictTrace
+        }
+        catch {
+            $conflictRejected = $true
+        }
+        finally {
+            Remove-GateFStagingDirectory -StagingPath $stagingConflict -OutputDirectory $outputDirectory
+            Remove-Item -LiteralPath $conflictDestination -Recurse -Force
+        }
+        if (-not $conflictRejected) {
+            throw "版本化报告目标冲突时发布器仍返回成功"
+        }
+        if ((Get-Content -LiteralPath $finalEvidence -Raw) -notmatch 'fresh') {
+            throw "目标冲突破坏了上一版正式 Evidence"
+        }
+        if (Test-Path -LiteralPath (Join-Path $outputDirectory (Split-Path -Leaf $conflictTrace))) {
+            throw "目标冲突前置检查后仍发布了 Trace"
+        }
+        Write-Host "SELF_TEST_CASE=PASS name=destination-conflict-preserves-previous"
+
+        # 6) 模拟评测失败：暂存中写入不完整评测输出后失败清理，正式证据保持上一次完整版
         $stagingEvalFail = New-GateFStagingDirectory -OutputDirectory $outputDirectory
         $evalFailReport = Join-Path $stagingEvalFail "gate-f-evaluation.json"
         $evalFailTrace = Join-Path $stagingEvalFail "gate-f-evaluation-traces-eval-fail.jsonl"
@@ -183,15 +231,16 @@ function Invoke-ExportAtomicitySelfTest {
         if ((Get-Content -LiteralPath $finalEvidence -Raw) -notmatch 'fresh') {
             throw "评测失败路径破坏了上一次完整证据包"
         }
-        if (Test-Path -LiteralPath (Join-Path $outputDirectory 'gate-f-evaluation.json')) {
-            $officialReport = Get-Content -LiteralPath (Join-Path $outputDirectory 'gate-f-evaluation.json') -Raw
+        $publishedReportPath = Join-Path $outputDirectory (Split-Path -Leaf $stageReport)
+        if (Test-Path -LiteralPath $publishedReportPath) {
+            $officialReport = Get-Content -LiteralPath $publishedReportPath -Raw
             if ($officialReport -match 'FailedLocalDeterministicEvaluation' -and $officialReport -match 'incomplete') {
                 throw "评测失败后正式目录留下了不完整评测报告"
             }
         }
         Write-Host "SELF_TEST_CASE=PASS name=evaluation-failure-preserves-previous"
 
-        # 6) 模拟文档门禁失败：同样只清暂存，不发布
+        # 7) 模拟文档门禁失败：同样只清暂存，不发布
         $stagingDocsFail = New-GateFStagingDirectory -OutputDirectory $outputDirectory
         [IO.File]::WriteAllText((Join-Path $stagingDocsFail "gate-f-evidence.json"), '{"status":"INCOMPLETE_DOCS"}', [Text.UTF8Encoding]::new($false))
         Remove-GateFStagingDirectory -StagingPath $stagingDocsFail -OutputDirectory $outputDirectory
@@ -203,7 +252,7 @@ function Invoke-ExportAtomicitySelfTest {
         }
         Write-Host "SELF_TEST_CASE=PASS name=docs-failure-preserves-previous"
 
-        # 7) 正式证据文件在失败前不存在时，失败后仍不存在（非“看似正式但残缺”）
+        # 8) 正式证据文件在失败前不存在时，失败后仍不存在（非“看似正式但残缺”）
         $cleanArtifacts = Join-Path $fixtureRoot "artifacts-clean"
         New-Item -ItemType Directory -Path $cleanArtifacts -Force | Out-Null
         $cleanFinal = Join-Path $cleanArtifacts "gate-f-evidence.json"
@@ -215,7 +264,7 @@ function Invoke-ExportAtomicitySelfTest {
         }
         Write-Host "SELF_TEST_CASE=PASS name=first-failure-leaves-no-official-evidence"
 
-        # 8) 真实调用评测进程：损坏 Golden 必须非零退出，且不得把正式证据路径写成 Passed
+        # 9) 真实调用评测进程：损坏 Golden 必须非零退出，且不得把正式证据路径写成 Passed
         $realEvalRoot = Join-Path $fixtureRoot "real-eval-fail"
         New-Item -ItemType Directory -Path $realEvalRoot -Force | Out-Null
         $corruptDataset = Join-Path $realEvalRoot "corrupt-golden.json"
@@ -352,8 +401,9 @@ try {
     }
 
     $stagingDirectory = New-GateFStagingDirectory -OutputDirectory $outputDirectory
-    $stagingReportPath = Join-Path $stagingDirectory "gate-f-evaluation.json"
     $evaluationRunId = "{0}-{1}" -f [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(), $PID
+    $stagingReportFileName = "gate-f-evaluation-$evaluationRunId.json"
+    $stagingReportPath = Join-Path $stagingDirectory $stagingReportFileName
     $stagingTraceFileName = "gate-f-evaluation-traces-$evaluationRunId.jsonl"
     $stagingTracePath = Join-Path $stagingDirectory $stagingTraceFileName
     $stagingEvidencePath = Join-Path $stagingDirectory "gate-f-evidence.json"
@@ -473,7 +523,7 @@ try {
             refusal_consistency_rate = $evaluation.metrics.refusal_consistency_rate
             trace_entry_count = $evaluation.trace_entry_count
             trace_final_hash = $evaluation.trace_final_hash
-            report_artifact = "gate-f-evaluation.json"
+            report_artifact = $stagingReportFileName
             trace_artifact = $evaluation.trace_artifact_file
         }
         verification = [ordered]@{
