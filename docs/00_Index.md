@@ -49,7 +49,7 @@
 
 - [总体设计阶段需求规格说明书 SRS V1.0](Enterprise_AI_Platform_总体设计阶段_需求规格说明书_SRS_V1.0.md)
 - [总体设计阶段需求与参考分析](Enterprise_AI_Platform_总体设计阶段_需求与参考分析.md)
-- [Gate F 可运行 PoC 与命令](../README.md)：批准快照、本地权限检索、引用、拒答、Trace、Golden Dataset 和证据包；不代表正式业务试点或生产能力。
+- [Gate F 可运行 PoC 与操作手册](../README.md)：批准快照、本地权限检索、引用、拒答、Trace、Golden Dataset；**生成证据**与**离线验证证据**各一条命令；不代表正式业务试点或生产能力。
 
 ## 5. 架构与实施文档
 
