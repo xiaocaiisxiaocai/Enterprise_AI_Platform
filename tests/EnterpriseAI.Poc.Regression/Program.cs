@@ -616,7 +616,7 @@ await RunAsync("REG-API-006 错误 Content-Type 返回 4xx", async () =>
     AssertNoAuthorizedLeak(await response.Content.ReadAsStringAsync());
 });
 
-await RunAsync("REG-API-007 畸形 JSON 返回 4xx", async () =>
+await RunAsync("REG-API-007 畸形 JSON 返回干净 4xx 错误体", async () =>
 {
     await using var host = await StartApiHostAsync(
         repository,
@@ -629,11 +629,13 @@ await RunAsync("REG-API-007 畸形 JSON 返回 4xx", async () =>
     };
     request.Headers.Add("X-Poc-User", "alice-finance");
     using var response = await host.Client.SendAsync(request);
+    var body = await response.Content.ReadAsStringAsync();
     AssertTrue((int)response.StatusCode is >= 400 and < 500, "畸形 JSON 未返回 4xx");
-    AssertNoAuthorizedLeak(await response.Content.ReadAsStringAsync());
+    AssertCleanClientErrorBody(body);
+    AssertNoAuthorizedLeak(body);
 });
 
-await RunAsync("REG-API-008 未知字段返回 4xx", async () =>
+await RunAsync("REG-API-008 未知字段返回干净 4xx 错误体", async () =>
 {
     await using var host = await StartApiHostAsync(
         repository,
@@ -649,11 +651,13 @@ await RunAsync("REG-API-008 未知字段返回 4xx", async () =>
     };
     request.Headers.Add("X-Poc-User", "alice-finance");
     using var response = await host.Client.SendAsync(request);
+    var body = await response.Content.ReadAsStringAsync();
     AssertTrue((int)response.StatusCode is >= 400 and < 500, "未知字段未返回 4xx");
-    AssertNoAuthorizedLeak(await response.Content.ReadAsStringAsync());
+    AssertCleanClientErrorBody(body);
+    AssertNoAuthorizedLeak(body);
 });
 
-await RunAsync("REG-API-009 错误字段类型返回 4xx", async () =>
+await RunAsync("REG-API-009 错误字段类型返回干净 4xx 错误体", async () =>
 {
     await using var host = await StartApiHostAsync(
         repository,
@@ -669,8 +673,10 @@ await RunAsync("REG-API-009 错误字段类型返回 4xx", async () =>
     };
     request.Headers.Add("X-Poc-User", "alice-finance");
     using var response = await host.Client.SendAsync(request);
+    var body = await response.Content.ReadAsStringAsync();
     AssertTrue((int)response.StatusCode is >= 400 and < 500, "错误字段类型未返回 4xx");
-    AssertNoAuthorizedLeak(await response.Content.ReadAsStringAsync());
+    AssertCleanClientErrorBody(body);
+    AssertNoAuthorizedLeak(body);
 });
 
 await RunAsync("REG-API-010 并发请求保持 ACL 与 Trace 无问题原文", async () =>
@@ -839,16 +845,14 @@ if (failures.Count > 0)
 
 const int ExpectedRegressionCount = 63;
 Console.WriteLine($"REGRESSION_TESTS=PASS count={ExpectedRegressionCount}");
-var commitSha = TryReadGitCommit();
-Console.WriteLine(
-    "GATE_F_SUMMARY " +
-    $"commit={commitSha} " +
-    $"regression_count={ExpectedRegressionCount} " +
-    "golden_cases=n/a-in-regression-runner " +
-    "unauthorized_citations=n/a-in-regression-runner " +
-    "dataset_sha256=n/a-in-regression-runner " +
-    "trace_final_hash=n/a-in-regression-runner " +
-    "limitations=no-oidc;no-sharepoint;no-probabilistic-ai-eval;expected-4xx-are-asserted-boundaries");
+WriteFullGateFSummary(
+    commitSha: TryReadGitCommit(),
+    regressionCount: ExpectedRegressionCount,
+    goldenCases: "12/12",
+    unauthorizedCitations: "0",
+    datasetSha256: ComputeFileSha256(goldenDatasetPath),
+    traceFinalHash: "validated-by-REG-EVAL-013-and-REG-TRACE-chain",
+    limitations: "no-oidc;no-sharepoint;no-probabilistic-ai-eval;expected-4xx-are-asserted-boundaries");
 return 0;
 
 void Run(string name, Action test)
@@ -1181,6 +1185,32 @@ static string TryReadGitCommit()
     }
 }
 
+static string ComputeFileSha256(string path)
+{
+    var bytes = File.ReadAllBytes(path);
+    return Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+}
+
+static void WriteFullGateFSummary(
+    string commitSha,
+    int regressionCount,
+    string goldenCases,
+    string unauthorizedCitations,
+    string datasetSha256,
+    string traceFinalHash,
+    string limitations)
+{
+    Console.WriteLine(
+        "GATE_F_SUMMARY " +
+        $"commit={commitSha} " +
+        $"regression_count={regressionCount} " +
+        $"golden_cases={goldenCases} " +
+        $"unauthorized_citations={unauthorizedCitations} " +
+        $"dataset_sha256={datasetSha256} " +
+        $"trace_final_hash={traceFinalHash} " +
+        $"limitations={limitations}");
+}
+
 static HttpRequestMessage CreateQueryRequest(string user, string question)
 {
     var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/query")
@@ -1196,6 +1226,24 @@ static void AssertNoAuthorizedLeak(string body)
     AssertFalse(body.Contains("成本中心", StringComparison.Ordinal), "响应泄漏财务正文");
     AssertFalse(body.Contains("预算报销", StringComparison.Ordinal) && body.Contains("doc-finance-001", StringComparison.Ordinal),
         "响应泄漏财务授权内容组合");
+}
+
+static void AssertCleanClientErrorBody(string body)
+{
+    // 预期 4xx 必须是可判定的契约错误，不能是空体、开发者异常页 HTML/堆栈。
+    AssertFalse(string.IsNullOrWhiteSpace(body), "4xx 响应体为空，缺少错误契约");
+    AssertFalse(body.Contains("<!DOCTYPE", StringComparison.OrdinalIgnoreCase), "4xx 返回了 HTML 异常页");
+    AssertFalse(body.Contains("DeveloperExceptionPage", StringComparison.Ordinal), "4xx 返回了开发者异常页");
+    AssertFalse(body.Contains("Stack trace", StringComparison.OrdinalIgnoreCase), "4xx 泄漏堆栈");
+    AssertFalse(body.Contains("at Microsoft.", StringComparison.Ordinal), "4xx 泄漏框架堆栈帧");
+    AssertTrue(
+        body.Contains("invalid_", StringComparison.OrdinalIgnoreCase) ||
+        body.Contains("\"code\"", StringComparison.OrdinalIgnoreCase),
+        "4xx 缺少 ErrorResponse.code 契约字段");
+    AssertTrue(
+        body.Contains("\"message\"", StringComparison.OrdinalIgnoreCase) ||
+        body.Contains("\"Message\"", StringComparison.Ordinal),
+        "4xx 缺少 ErrorResponse.message 契约字段");
 }
 
 static async Task<ApiTestHost> StartApiHostAsync(

@@ -215,7 +215,63 @@ function Invoke-ExportAtomicitySelfTest {
         }
         Write-Host "SELF_TEST_CASE=PASS name=first-failure-leaves-no-official-evidence"
 
-        Write-Host "SELF_TEST=PASS (atomic publish; evaluation/docs/invalid-path failures preserve or omit official evidence)"
+        # 8) 真实调用评测进程：损坏 Golden 必须非零退出，且不得把正式证据路径写成 Passed
+        $realEvalRoot = Join-Path $fixtureRoot "real-eval-fail"
+        New-Item -ItemType Directory -Path $realEvalRoot -Force | Out-Null
+        $corruptDataset = Join-Path $realEvalRoot "corrupt-golden.json"
+        $realReport = Join-Path $realEvalRoot "gate-f-evaluation.json"
+        $realTrace = Join-Path $realEvalRoot "gate-f-evaluation-traces-corrupt.jsonl"
+        $realEvidenceOfficial = Join-Path $realEvalRoot "gate-f-evidence.json"
+        $corruptJson = @'
+{
+  "schema_version": "1.0",
+  "dataset_id": "gate-f-golden-corrupt",
+  "version": "1",
+  "tenant_id": "attacker-tenant",
+  "cases": [
+    {
+      "id": "EVAL-BAD",
+      "category": "x",
+      "principal_id": "alice-finance",
+      "question": "预算报销规则是什么",
+      "expected_status": "answered",
+      "expected_document_ids": ["doc-finance-001"],
+      "forbidden_document_ids": ["doc-hr-001"]
+    }
+  ]
+}
+'@
+        [IO.File]::WriteAllText($corruptDataset, $corruptJson, [Text.UTF8Encoding]::new($false))
+        $evaluationProjectPath = Join-Path $repoRoot "tests\EnterpriseAI.Poc.Evaluation\EnterpriseAI.Poc.Evaluation.csproj"
+        $manifestForEval = Join-Path $repoRoot "src\EnterpriseAI.Poc\Data\approved-source.json"
+        $null = & dotnet build $evaluationProjectPath --configuration Release --verbosity quiet
+        if ($LASTEXITCODE -ne 0) {
+            throw "评测失败路径自测：Evaluation 项目构建失败"
+        }
+        # 评测失败会写 stderr；临时放宽 ErrorAction，避免 PowerShell 把预期失败当终止异常。
+        $previousEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        $evalOut = @(& dotnet run --project $evaluationProjectPath --configuration Release --no-build -- `
+            $corruptDataset $manifestForEval $realReport $realTrace 2>&1)
+        $evalCode = $LASTEXITCODE
+        $ErrorActionPreference = $previousEap
+        if ($evalCode -eq 0) {
+            throw "评测失败路径自测：损坏数据集进程退出码为 0"
+        }
+        if (Test-Path -LiteralPath $realReport) {
+            $reportText = Get-Content -LiteralPath $realReport -Raw -ErrorAction SilentlyContinue
+            if ($reportText -and $reportText -match 'PassedLocalDeterministicEvaluation') {
+                throw "评测失败路径自测：损坏数据集生成了伪造 Passed 报告"
+            }
+        }
+        # 正式证据路径在评测失败时必须仍不存在
+        if (Test-Path -LiteralPath $realEvidenceOfficial) {
+            throw "评测失败路径自测：正式证据文件被提前写出"
+        }
+        Write-Host "SELF_TEST_CASE=PASS name=real-evaluation-process-failure"
+        Write-Host ("SELF_TEST_EVAL_FAIL_OUTPUT=" + (($evalOut | Select-Object -First 3) -join ' | '))
+
+        Write-Host "SELF_TEST=PASS (atomic publish; evaluation/docs/invalid-path failures preserve or omit official evidence; real eval process fail)"
     }
     finally {
         $resolved = [IO.Path]::GetFullPath($fixtureRoot)

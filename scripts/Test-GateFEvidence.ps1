@@ -235,11 +235,25 @@ function Test-GateFEvidenceBundle {
                     [void]$errors.Add("ID: 非法回归标识 $id")
                 }
             }
+            # 完整 63 条 REG 标识必须全部出现，禁止子集“通过”。
             $requiredIds = @(
-                'REG-AUTH-001', 'REG-ACL-001', 'REG-API-001',
-                'REG-EVAL-001', 'REG-EVAL-012', 'REG-EVAL-013',
-                'REG-TRACE-003', 'REG-TRACE-004'
+                'REG-AUTH-001', 'REG-ACL-001', 'REG-ACL-002', 'REG-ACL-003', 'REG-TEN-001',
+                'REG-RAG-001', 'REG-CITE-001', 'REG-SRC-001', 'REG-SRC-002', 'REG-SRC-003',
+                'REG-SRC-004', 'REG-AUTH-002', 'REG-TRACE-001', 'REG-TRACE-002', 'REG-TRACE-003',
+                'REG-SRC-005', 'REG-TRACE-004', 'REG-TRACE-005',
+                'REG-TRACE-006', 'REG-TRACE-007', 'REG-TRACE-008', 'REG-TRACE-009', 'REG-TRACE-010', 'REG-TRACE-011',
+                'REG-SRC-006', 'REG-SRC-007', 'REG-SRC-008', 'REG-SRC-009', 'REG-SRC-010',
+                'REG-SRC-011', 'REG-SRC-012', 'REG-SRC-013', 'REG-SRC-014', 'REG-SRC-015',
+                'REG-API-001', 'REG-API-002', 'REG-API-003', 'REG-API-004', 'REG-API-005',
+                'REG-API-006', 'REG-API-007', 'REG-API-008', 'REG-API-009', 'REG-API-010',
+                'REG-EVAL-001', 'REG-EVAL-002', 'REG-EVAL-003', 'REG-EVAL-004', 'REG-EVAL-005',
+                'REG-EVAL-006', 'REG-EVAL-007', 'REG-EVAL-008', 'REG-EVAL-009', 'REG-EVAL-010',
+                'REG-EVAL-011', 'REG-EVAL-012', 'REG-EVAL-013', 'REG-EVAL-014', 'REG-EVAL-015',
+                'REG-TRACE-012', 'REG-TRACE-013', 'REG-SRC-016', 'REG-SRC-017'
             )
+            if ($requiredIds.Count -ne $script:ExpectedRegressionCount) {
+                [void]$errors.Add("ID: 必要回归清单长度与期望计数不一致")
+            }
             foreach ($required in $requiredIds) {
                 if ($required -notin $ids) {
                     [void]$errors.Add("ID: 缺少必要回归 $required")

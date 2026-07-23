@@ -1,9 +1,17 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace EnterpriseAI.Poc;
 
 public static class PocApplication
 {
+    private static readonly JsonSerializerOptions QueryJsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
+    };
+
     public static WebApplication Build(
         string[] args,
         DocumentRepository? repository = null,
@@ -24,9 +32,16 @@ public static class PocApplication
                 "X-Poc-User 测试身份只能在 Development 环境启用。");
         }
 
-        builder.Services.ConfigureHttpJsonOptions(options =>
+        // 输入边界错误由处理器显式返回 ErrorResponse，不抛到开发者异常页。
+        builder.Services.Configure<RouteHandlerOptions>(routeOptions =>
         {
-            options.SerializerOptions.UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow;
+            routeOptions.ThrowOnBadRequest = false;
+        });
+        builder.Services.ConfigureHttpJsonOptions(jsonOptions =>
+        {
+            jsonOptions.SerializerOptions.PropertyNameCaseInsensitive = true;
+            jsonOptions.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
+            jsonOptions.SerializerOptions.UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow;
         });
         builder.Services.AddSingleton<PocIdentityDirectory>();
         builder.Services.AddSingleton(repository ?? DocumentRepository.LoadApprovedSnapshot(
@@ -36,12 +51,12 @@ public static class PocApplication
         builder.Services.AddSingleton<PermissionAwareSearchService>();
 
         var application = builder.Build();
+
         application.MapGet("/healthz", () =>
             TypedResults.Ok(new { status = "healthy", scope = "gate-f-poc" }));
 
-        application.MapPost("/api/v1/query", IResult (
+        application.MapPost("/api/v1/query", async Task<IResult> (
             HttpRequest httpRequest,
-            QueryRequest request,
             PocIdentityDirectory identities,
             PermissionAwareSearchService search) =>
         {
@@ -50,6 +65,34 @@ public static class PocApplication
                 !identities.TryResolve(userHeader.ToString(), out var identity))
             {
                 return TypedResults.Unauthorized();
+            }
+
+            if (!httpRequest.HasJsonContentType())
+            {
+                return TypedResults.BadRequest(new ErrorResponse(
+                    "invalid_content_type",
+                    "Content-Type 必须为 application/json。"));
+            }
+
+            QueryRequest? request;
+            try
+            {
+                request = await JsonSerializer.DeserializeAsync<QueryRequest>(
+                    httpRequest.Body,
+                    QueryJsonOptions);
+            }
+            catch (JsonException)
+            {
+                return TypedResults.BadRequest(new ErrorResponse(
+                    "invalid_request",
+                    "请求体无效、字段类型错误或包含未知字段。"));
+            }
+
+            if (request is null)
+            {
+                return TypedResults.BadRequest(new ErrorResponse(
+                    "invalid_request",
+                    "请求体不能为空。"));
             }
 
             if (string.IsNullOrWhiteSpace(request.Question) || request.Question.Length > 500)
