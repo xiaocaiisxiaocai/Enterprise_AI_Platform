@@ -16,43 +16,72 @@ public sealed class LocalFileIngestionService
     private readonly DocumentRepository _repository;
     private readonly LocalFileIngestionOptions _options;
     private readonly LocalStateStore? _stateStore;
+    private readonly LocalFileIngestionLimits _limits;
     private Dictionary<string, IngestedFileState> _published = new(StringComparer.OrdinalIgnoreCase);
 
     public LocalFileIngestionService(
         DocumentRepository repository,
         LocalFileIngestionOptions options,
-        LocalStateStore? stateStore = null)
+        LocalStateStore? stateStore = null,
+        LocalFileIngestionLimits? limits = null)
     {
         _repository = repository ?? throw new ArgumentNullException(nameof(repository));
         _options = ValidateOptions(options);
         _stateStore = stateStore;
+        _limits = ValidateLimits(limits ?? new LocalFileIngestionLimits());
         if (stateStore is not null)
         {
             ReplayCheckpoint(stateStore.ReadEvents());
         }
     }
 
-    public LocalFileIngestionResult Synchronize()
+    public LocalFileIngestionResult Synchronize(CancellationToken cancellationToken = default)
     {
         lock (_sync)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var candidates = new Dictionary<string, IngestedFileState>(
                 StringComparer.OrdinalIgnoreCase);
             var quarantine = new List<IngestionQuarantineItem>();
             var ignored = 0;
-            foreach (var sourcePath in EnumerateSafeFiles(_options.RootPath, quarantine))
+            var supportedFileCount = 0;
+            var batchBytes = 0L;
+            foreach (var sourcePath in EnumerateSafeFiles(
+                _options.RootPath,
+                quarantine,
+                _limits.MaxDirectoryDepth,
+                cancellationToken))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 var extension = Path.GetExtension(sourcePath);
                 if (!SupportedExtensions.Contains(extension))
                 {
                     ignored++;
                     continue;
                 }
+                supportedFileCount++;
+                if (supportedFileCount > _limits.MaxFiles)
+                {
+                    throw new InvalidDataException("本地摄取文件数超过单批限制。");
+                }
+                batchBytes = checked(batchBytes + new FileInfo(sourcePath).Length);
+                if (batchBytes > _limits.MaxBatchBytes)
+                {
+                    throw new InvalidDataException("本地摄取总字节数超过单批限制。");
+                }
 
                 var relativePath = NormalizeRelativePath(_options.RootPath, sourcePath);
                 try
                 {
-                    var bytes = ReadStableFile(sourcePath);
+                    var bytes = ReadStableFile(_options.RootPath, sourcePath);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (bytes.Contains((byte)0))
+                    {
+                        quarantine.Add(new IngestionQuarantineItem(
+                            relativePath,
+                            "content_type_mismatch"));
+                        continue;
+                    }
                     var content = StrictUtf8.GetString(bytes).TrimEnd('\r', '\n');
                     if (string.IsNullOrWhiteSpace(content))
                     {
@@ -108,6 +137,7 @@ public sealed class LocalFileIngestionService
                 .Select(pair => pair.Value.DocumentId)
                 .ToArray();
 
+            cancellationToken.ThrowIfCancellationRequested();
             _repository.ApplyIngestionBatch(
                 candidates.Values.Select(candidate => candidate.Document!).ToArray(),
                 removedIds);
@@ -166,18 +196,33 @@ public sealed class LocalFileIngestionService
         };
     }
 
+    private static LocalFileIngestionLimits ValidateLimits(LocalFileIngestionLimits limits)
+    {
+        if (limits.MaxFiles <= 0 ||
+            limits.MaxDirectoryDepth < 0 ||
+            limits.MaxBatchBytes <= 0)
+        {
+            throw new InvalidDataException("本地摄取资源限制必须为正数。");
+        }
+        return limits;
+    }
+
     private static IEnumerable<string> EnumerateSafeFiles(
         string rootPath,
-        List<IngestionQuarantineItem> quarantine)
+        List<IngestionQuarantineItem> quarantine,
+        int maxDepth,
+        CancellationToken cancellationToken)
     {
-        var pending = new Stack<string>();
-        pending.Push(rootPath);
+        var pending = new Stack<(string Path, int Depth)>();
+        pending.Push((rootPath, 0));
         while (pending.Count > 0)
         {
-            var directory = pending.Pop();
+            cancellationToken.ThrowIfCancellationRequested();
+            var (directory, depth) = pending.Pop();
             foreach (var entry in Directory.EnumerateFileSystemEntries(directory)
                 .Order(StringComparer.OrdinalIgnoreCase))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 var attributes = File.GetAttributes(entry);
                 var relativePath = NormalizeRelativePath(rootPath, entry);
                 if ((attributes & FileAttributes.ReparsePoint) != 0)
@@ -187,7 +232,11 @@ public sealed class LocalFileIngestionService
                 }
                 if ((attributes & FileAttributes.Directory) != 0)
                 {
-                    pending.Push(entry);
+                    if (depth >= maxDepth)
+                    {
+                        throw new InvalidDataException("本地摄取目录深度超过限制。");
+                    }
+                    pending.Push((entry, depth + 1));
                 }
                 else
                 {
@@ -197,8 +246,13 @@ public sealed class LocalFileIngestionService
         }
     }
 
-    private static byte[] ReadStableFile(string sourcePath)
+    private static byte[] ReadStableFile(string rootPath, string sourcePath)
     {
+        EnsureWithinRoot(rootPath, sourcePath);
+        if ((File.GetAttributes(sourcePath) & FileAttributes.ReparsePoint) != 0)
+        {
+            throw new IOException("本地来源文件变为重解析点。");
+        }
         using var stream = new FileStream(
             sourcePath,
             FileMode.Open,
@@ -227,7 +281,28 @@ public sealed class LocalFileIngestionService
         {
             throw new IOException("本地来源文件在读取期间发生变化。");
         }
+        EnsureWithinRoot(rootPath, sourcePath);
+        if ((File.GetAttributes(sourcePath) & FileAttributes.ReparsePoint) != 0)
+        {
+            throw new IOException("本地来源文件在读取期间变为重解析点。");
+        }
         return bytes;
+    }
+
+    private static void EnsureWithinRoot(string rootPath, string path)
+    {
+        var fullRoot = Path.GetFullPath(rootPath);
+        var fullPath = Path.GetFullPath(path);
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        var rootPrefix = fullRoot.EndsWith(Path.DirectorySeparatorChar)
+            ? fullRoot
+            : fullRoot + Path.DirectorySeparatorChar;
+        if (!fullPath.StartsWith(rootPrefix, comparison))
+        {
+            throw new IOException("本地来源文件越过配置根目录。");
+        }
     }
 
     private static string NormalizeRelativePath(string rootPath, string path) =>

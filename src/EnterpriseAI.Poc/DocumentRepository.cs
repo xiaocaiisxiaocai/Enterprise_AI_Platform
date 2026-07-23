@@ -224,6 +224,11 @@ public sealed class DocumentRepository
             var changed = false;
             foreach (var document in documents)
             {
+                if (_documents.TryGetValue(document.Id, out var current) &&
+                    !current.Document.SourcePath.StartsWith("local/", StringComparison.Ordinal))
+                {
+                    throw new InvalidDataException("本地摄取文档标识与批准快照冲突。");
+                }
                 var replacement = new ManagedDocument(
                     document,
                     KnowledgeLifecycleStatus.Published,

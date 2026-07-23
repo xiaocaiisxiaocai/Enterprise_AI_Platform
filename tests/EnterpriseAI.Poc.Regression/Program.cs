@@ -1231,6 +1231,179 @@ Run("REG-STATE-005 摄取 Checkpoint 跨重启保持幂等和删除状态", () =
     }));
 });
 
+Run("REG-SEC-001 含 NUL 的伪文本按类型不一致隔离", () =>
+{
+    WithTemporaryIngestionRoot(root =>
+    {
+        File.WriteAllBytes(Path.Combine(root, "binary.txt"), [0x41, 0x00, 0x42]);
+        var localRepository = DocumentRepository.LoadApprovedSnapshot(dataPath);
+        var result = CreateIngestion(localRepository, root, ["employees"]).Synchronize();
+        AssertEqual(1, result.Quarantined.Count, "伪文本未进入隔离");
+        AssertEqual("content_type_mismatch", result.Quarantined[0].ReasonCode, "伪文本隔离原因错误");
+    });
+});
+
+Run("REG-SEC-002 文件数超限时整批不发布", () =>
+{
+    WithTemporaryIngestionRoot(root =>
+    {
+        File.WriteAllText(Path.Combine(root, "one.txt"), "一", new UTF8Encoding(false));
+        File.WriteAllText(Path.Combine(root, "two.txt"), "二", new UTF8Encoding(false));
+        var localRepository = DocumentRepository.LoadApprovedSnapshot(dataPath);
+        var ingestion = CreateIngestion(
+            localRepository,
+            root,
+            ["employees"],
+            limits: new LocalFileIngestionLimits(MaxFiles: 1));
+        ExpectThrows<InvalidDataException>(
+            () => ingestion.Synchronize(),
+            "超出文件数限制的批次被接受");
+        AssertFalse(localRepository.Documents.Any(document =>
+            document.SourcePath.StartsWith("local/", StringComparison.Ordinal)),
+            "超限批次发生部分发布");
+    });
+});
+
+Run("REG-SEC-003 单批总字节超限时整批不发布", () =>
+{
+    WithTemporaryIngestionRoot(root =>
+    {
+        File.WriteAllText(Path.Combine(root, "large.txt"), "超过批次限制", new UTF8Encoding(false));
+        var localRepository = DocumentRepository.LoadApprovedSnapshot(dataPath);
+        var ingestion = CreateIngestion(
+            localRepository,
+            root,
+            ["employees"],
+            limits: new LocalFileIngestionLimits(MaxBatchBytes: 2));
+        ExpectThrows<InvalidDataException>(
+            () => ingestion.Synchronize(),
+            "超出总字节限制的批次被接受");
+        AssertFalse(localRepository.Documents.Any(document =>
+            document.SourcePath.StartsWith("local/", StringComparison.Ordinal)),
+            "字节超限批次发生部分发布");
+    });
+});
+
+Run("REG-SEC-004 目录深度超限时整批不发布", () =>
+{
+    WithTemporaryIngestionRoot(root =>
+    {
+        var nested = Path.Combine(root, "level1", "level2");
+        Directory.CreateDirectory(nested);
+        File.WriteAllText(Path.Combine(nested, "deep.txt"), "深层内容", new UTF8Encoding(false));
+        var localRepository = DocumentRepository.LoadApprovedSnapshot(dataPath);
+        var ingestion = CreateIngestion(
+            localRepository,
+            root,
+            ["employees"],
+            limits: new LocalFileIngestionLimits(MaxDirectoryDepth: 1));
+        ExpectThrows<InvalidDataException>(
+            () => ingestion.Synchronize(),
+            "超出目录深度限制的批次被接受");
+        AssertFalse(localRepository.Documents.Any(document =>
+            document.SourcePath.StartsWith("local/", StringComparison.Ordinal)),
+            "深度超限批次发生部分发布");
+    });
+});
+
+Run("REG-SEC-005 取消的同步不会改变当前投影", () =>
+{
+    WithTemporaryIngestionRoot(root =>
+    {
+        File.WriteAllText(Path.Combine(root, "cancelled.txt"), "取消内容", new UTF8Encoding(false));
+        var localRepository = DocumentRepository.LoadApprovedSnapshot(dataPath);
+        var ingestion = CreateIngestion(localRepository, root, ["employees"]);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        ExpectThrows<OperationCanceledException>(
+            () => ingestion.Synchronize(cancellation.Token),
+            "已取消的同步仍然执行");
+        AssertFalse(localRepository.Documents.Any(document =>
+            document.SourcePath.StartsWith("local/", StringComparison.Ordinal)),
+            "取消批次改变了投影");
+    });
+});
+
+Run("REG-SEC-006 摄取文档 ID 不得覆盖批准快照", () =>
+{
+    var localRepository = DocumentRepository.LoadApprovedSnapshot(dataPath);
+    var collision = new DocumentRecord(
+        "doc-finance-001",
+        PocIdentityDirectory.EnterpriseTenantId,
+        "sha256:" + new string('a', 64),
+        "冲突",
+        "全文",
+        "local/collision/document.txt",
+        "冲突正文",
+        ["employees"],
+        ["冲突"]);
+    ExpectThrows<InvalidDataException>(
+        () => localRepository.ApplyIngestionBatch([collision], []),
+        "本地摄取覆盖了批准快照文档");
+});
+
+await RunAsync("REG-WORK-001 后台 Worker 周期同步文件变化", async () =>
+{
+    var ingestionRoot = Path.Combine(
+        Path.GetTempPath(),
+        "enterprise-ai-worker-regression",
+        Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(ingestionRoot);
+    try
+    {
+        var sourcePath = Path.Combine(ingestionRoot, "worker.txt");
+        File.WriteAllText(sourcePath, "Worker 初始内容", new UTF8Encoding(false));
+        var localRepository = DocumentRepository.LoadApprovedSnapshot(dataPath);
+        var args = new[]
+        {
+            $"--GateF:LocalIngestion:RootPath={ingestionRoot}",
+            "--GateF:LocalIngestion:SourceId=worker-test",
+            "--GateF:LocalIngestion:Owner=worker-owner",
+            "--GateF:LocalIngestion:Classification=synthetic",
+            "--GateF:LocalIngestion:AllowedGroups:0=employees",
+            "--GateF:LocalIngestion:IntervalSeconds=1",
+            "--GateF:LocalIngestion:TimeoutSeconds=5"
+        };
+        var application = PocApplication.Build(
+            args,
+            localRepository,
+            "Development",
+            new InMemorySearchTraceSink());
+        application.Urls.Add("http://127.0.0.1:0");
+        await application.StartAsync();
+        try
+        {
+            File.WriteAllText(sourcePath, "Worker 更新内容", new UTF8Encoding(false));
+            var deadline = DateTimeOffset.UtcNow.AddSeconds(6);
+            while (DateTimeOffset.UtcNow < deadline &&
+                !localRepository.Documents.Any(document =>
+                    document.Content.Contains("Worker 更新内容", StringComparison.Ordinal)))
+            {
+                await Task.Delay(100);
+            }
+            AssertTrue(localRepository.Documents.Any(document =>
+                document.Content.Contains("Worker 更新内容", StringComparison.Ordinal)),
+                "后台 Worker 未在期限内同步文件变化");
+        }
+        finally
+        {
+            await application.StopAsync();
+            await application.DisposeAsync();
+        }
+    }
+    finally
+    {
+        var expectedParent = Path.GetFullPath(Path.Combine(
+            Path.GetTempPath(),
+            "enterprise-ai-worker-regression")) + Path.DirectorySeparatorChar;
+        var resolvedRoot = Path.GetFullPath(ingestionRoot);
+        if (resolvedRoot.StartsWith(expectedParent, StringComparison.OrdinalIgnoreCase))
+        {
+            Directory.Delete(resolvedRoot, recursive: true);
+        }
+    }
+});
+
 var goldenDatasetPath = ResolveGoldenDatasetPath();
 var approvedManifestForEval = Path.Combine(AppContext.BaseDirectory, "Data", "approved-source.json");
 foreach (var (id, name, test) in GoldenDatasetContractRegression.BuildCases(
@@ -1252,7 +1425,7 @@ if (failures.Count > 0)
     return 1;
 }
 
-const int ExpectedRegressionCount = 85;
+const int ExpectedRegressionCount = 92;
 Console.WriteLine($"REGRESSION_TESTS=PASS count={ExpectedRegressionCount}");
 WriteFullGateFSummary(
     commitSha: TryReadGitCommit(),
@@ -1600,7 +1773,8 @@ static LocalFileIngestionService CreateIngestion(
     DocumentRepository repository,
     string root,
     string[] allowedGroups,
-    LocalStateStore? stateStore = null) =>
+    LocalStateStore? stateStore = null,
+    LocalFileIngestionLimits? limits = null) =>
     new(
         repository,
         new LocalFileIngestionOptions(
@@ -1609,7 +1783,8 @@ static LocalFileIngestionService CreateIngestion(
             "local-test-owner",
             "synthetic",
             allowedGroups),
-        stateStore);
+        stateStore,
+        limits);
 
 static void WithTemporaryStateRoot(Action<string> test)
 {

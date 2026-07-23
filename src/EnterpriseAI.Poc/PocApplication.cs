@@ -76,9 +76,28 @@ public static class PocApplication
                     builder.Configuration["GateF:LocalIngestion:Owner"] ?? string.Empty,
                     builder.Configuration["GateF:LocalIngestion:Classification"] ?? string.Empty,
                     allowedGroups),
-                localStateStore);
+                localStateStore,
+                new LocalFileIngestionLimits(
+                    ReadPositiveInt(builder.Configuration["GateF:LocalIngestion:MaxFiles"], 1_000),
+                    ReadNonNegativeInt(builder.Configuration["GateF:LocalIngestion:MaxDirectoryDepth"], 8),
+                    ReadPositiveLong(
+                        builder.Configuration["GateF:LocalIngestion:MaxBatchBytes"],
+                        32L * 1024 * 1024)));
             ingestion.Synchronize();
             builder.Services.AddSingleton(ingestion);
+            var intervalSeconds = ReadNonNegativeInt(
+                builder.Configuration["GateF:LocalIngestion:IntervalSeconds"],
+                0);
+            if (intervalSeconds > 0)
+            {
+                var timeoutSeconds = ReadPositiveInt(
+                    builder.Configuration["GateF:LocalIngestion:TimeoutSeconds"],
+                    30);
+                builder.Services.AddSingleton(new LocalFileIngestionWorkerOptions(
+                    TimeSpan.FromSeconds(intervalSeconds),
+                    TimeSpan.FromSeconds(timeoutSeconds)));
+                builder.Services.AddHostedService<LocalFileIngestionWorker>();
+            }
         }
         builder.Services.AddSingleton(traceSink ?? new HashChainedJsonLineTraceSink(
             Path.Combine(builder.Environment.ContentRootPath, ".gate-f", "search-traces.jsonl")));
@@ -140,5 +159,38 @@ public static class PocApplication
         });
 
         return application;
+    }
+
+    private static int ReadPositiveInt(string? value, int defaultValue)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return defaultValue;
+        }
+        return int.TryParse(value, out var parsed) && parsed > 0
+            ? parsed
+            : throw new InvalidDataException("本地摄取正整数配置无效。");
+    }
+
+    private static int ReadNonNegativeInt(string? value, int defaultValue)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return defaultValue;
+        }
+        return int.TryParse(value, out var parsed) && parsed >= 0
+            ? parsed
+            : throw new InvalidDataException("本地摄取非负整数配置无效。");
+    }
+
+    private static long ReadPositiveLong(string? value, long defaultValue)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return defaultValue;
+        }
+        return long.TryParse(value, out var parsed) && parsed > 0
+            ? parsed
+            : throw new InvalidDataException("本地摄取字节限制配置无效。");
     }
 }

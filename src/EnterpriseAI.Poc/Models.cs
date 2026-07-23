@@ -60,6 +60,15 @@ public sealed record LocalFileIngestionOptions(
     string Classification,
     string[] AllowedGroups);
 
+public sealed record LocalFileIngestionLimits(
+    int MaxFiles = 1_000,
+    int MaxDirectoryDepth = 8,
+    long MaxBatchBytes = 32 * 1024 * 1024);
+
+public sealed record LocalFileIngestionWorkerOptions(
+    TimeSpan Interval,
+    TimeSpan Timeout);
+
 public sealed record IngestionQuarantineItem(
     string RelativePath,
     string ReasonCode);
