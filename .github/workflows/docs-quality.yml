@@ -22,6 +22,12 @@ on:
       - "Directory.Build.props"
       - ".github/workflows/docs-quality.yml"
 
+# 同分支/PR 仅保留最新运行，避免过期结果浪费资源。
+concurrency:
+  group: repository-quality-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# 默认最小只读权限；不引入 repository secrets 或企业权限步骤。
 permissions:
   contents: read
 
@@ -29,6 +35,8 @@ jobs:
   validate-docs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -38,7 +46,10 @@ jobs:
 
   gate-f-poc:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: write
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -49,9 +60,13 @@ jobs:
       - name: Verify Gate F and export evidence
         shell: pwsh
         run: ./scripts/Export-GateFEvidence.ps1 -OutputPath artifacts/gate-f-evidence.json -RequireCleanWorktree
+      - name: Offline-verify evidence bundle
+        shell: pwsh
+        run: ./scripts/Test-GateFEvidence.ps1 -EvidencePath artifacts/gate-f-evidence.json
       - name: Upload Gate F evidence
         uses: actions/upload-artifact@v7
         with:
           name: gate-f-evidence-${{ github.sha }}
           path: artifacts/
           if-no-files-found: error
+          retention-days: 14
