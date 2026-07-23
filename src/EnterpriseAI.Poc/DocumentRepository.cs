@@ -83,11 +83,7 @@ public sealed class DocumentRepository
                 throw new InvalidDataException($"批准数据源包含冲突的来源路径：{entry.Id}。");
             }
 
-            var sourceBytes = File.ReadAllBytes(sourcePath);
-            if (sourceBytes.Length > MaxSourceFileBytes)
-            {
-                throw new InvalidDataException($"文档 {entry.Id} 超过批准快照大小上限。");
-            }
+            var sourceBytes = ReadApprovedSourceBytes(sourcePath, entry.Id);
 
             var actualHash = ComputeSha256(sourceBytes);
             if (!string.Equals(actualHash, entry.Sha256, StringComparison.OrdinalIgnoreCase))
@@ -218,6 +214,41 @@ public sealed class DocumentRepository
         var relative = Path.GetRelativePath(rootPath, fullPath)
             .Replace('\\', '/');
         return relative.ToLowerInvariant();
+    }
+
+    private static byte[] ReadApprovedSourceBytes(string sourcePath, string documentId)
+    {
+        using var stream = new FileStream(
+            sourcePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            bufferSize: 4096,
+            FileOptions.SequentialScan);
+        var sourceLength = stream.Length;
+        if (sourceLength > MaxSourceFileBytes)
+        {
+            throw new InvalidDataException($"文档 {documentId} 超过批准快照大小上限。");
+        }
+
+        var sourceBytes = new byte[checked((int)sourceLength)];
+        var offset = 0;
+        while (offset < sourceBytes.Length)
+        {
+            var read = stream.Read(sourceBytes, offset, sourceBytes.Length - offset);
+            if (read == 0)
+            {
+                throw new InvalidDataException($"文档 {documentId} 在读取期间发生变化。");
+            }
+            offset += read;
+        }
+
+        if (stream.ReadByte() != -1 || stream.Length != sourceLength)
+        {
+            throw new InvalidDataException($"文档 {documentId} 在读取期间发生变化。");
+        }
+
+        return sourceBytes;
     }
 
     private static void RejectReparsePoint(string path)

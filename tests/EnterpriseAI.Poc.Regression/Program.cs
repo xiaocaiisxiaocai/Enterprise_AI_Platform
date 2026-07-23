@@ -300,8 +300,9 @@ Run("REG-SRC-013 超大文件被拒绝", () =>
         relativePath: "fixtures/document.md",
         allowedGroups: ["employees"],
         approvedHash: ComputeSha256Bytes(oversized),
-        manifestPath => ExpectThrows<InvalidDataException>(
+        manifestPath => ExpectThrowsWithMessage<InvalidDataException>(
             () => DocumentRepository.LoadApprovedSnapshot(manifestPath),
+            "超过批准快照大小上限",
             "超大文件被接受"));
 });
 
