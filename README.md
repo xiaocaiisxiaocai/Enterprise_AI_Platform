@@ -18,6 +18,7 @@ dotnet build .\tests\EnterpriseAI.Poc.Regression\EnterpriseAI.Poc.Regression.csp
 dotnet run --project .\tests\EnterpriseAI.Poc.Regression\EnterpriseAI.Poc.Regression.csproj --no-build
 dotnet run --project .\tests\EnterpriseAI.Poc.Evaluation\EnterpriseAI.Poc.Evaluation.csproj -- --self-test
 dotnet run --project .\src\EnterpriseAI.Poc\EnterpriseAI.Poc.csproj
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Export-GateFEvidence.ps1 -SelfTest
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Export-GateFEvidence.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-GateFEvidence.ps1 -SelfTest
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-GateFEvidence.ps1 -EvidencePath .\artifacts\gate-f-evidence.json
