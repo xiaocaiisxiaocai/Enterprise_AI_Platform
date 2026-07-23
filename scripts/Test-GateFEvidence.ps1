@@ -31,6 +31,81 @@ function Test-Sha256Hex {
     return -not [string]::IsNullOrWhiteSpace($Value) -and $Value -match $script:Sha256Pattern
 }
 
+function Get-Sha256Hex {
+    param([Parameter(Mandatory)][string]$Text)
+
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [Text.Encoding]::UTF8.GetBytes($Text)
+        return ([BitConverter]::ToString($sha256.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
+    }
+    finally {
+        $sha256.Dispose()
+    }
+}
+
+function Get-TraceRecordRawJson {
+    param([Parameter(Mandatory)][string]$Line)
+
+    $recordMatches = [regex]::Matches($Line, '"record"\s*:')
+    if ($recordMatches.Count -ne 1) {
+        throw "Trace envelope 必须且只能包含一个 record 字段。"
+    }
+
+    $index = $recordMatches[0].Index + $recordMatches[0].Length
+    while ($index -lt $Line.Length -and [char]::IsWhiteSpace($Line[$index])) {
+        $index++
+    }
+    if ($index -ge $Line.Length -or $Line[$index] -ne '{') {
+        throw "Trace record 必须是 JSON 对象。"
+    }
+
+    $start = $index
+    $depth = 0
+    $inString = $false
+    $escaped = $false
+    for (; $index -lt $Line.Length; $index++) {
+        $character = $Line[$index]
+        if ($inString) {
+            if ($escaped) {
+                $escaped = $false
+            }
+            elseif ($character -eq '\') {
+                $escaped = $true
+            }
+            elseif ($character -eq '"') {
+                $inString = $false
+            }
+            continue
+        }
+
+        if ($character -eq '"') {
+            $inString = $true
+        }
+        elseif ($character -eq '{') {
+            $depth++
+        }
+        elseif ($character -eq '}') {
+            $depth--
+            if ($depth -eq 0) {
+                return $Line.Substring($start, $index - $start + 1)
+            }
+        }
+    }
+
+    throw "Trace record JSON 对象未闭合。"
+}
+
+function Get-TraceEntryHash {
+    param(
+        [Parameter(Mandatory)][long]$Sequence,
+        [Parameter(Mandatory)][string]$PreviousHash,
+        [Parameter(Mandatory)][string]$RecordJson
+    )
+
+    return Get-Sha256Hex -Text ("{0}`n{1}`n{2}" -f $Sequence, $PreviousHash, $RecordJson)
+}
+
 function Get-RequiredProperty {
     param(
         $Object,
@@ -328,6 +403,15 @@ function Test-GateFEvidenceBundle {
                             [void]$errors.Add("ARTIFACT: Trace entryHash 在第 $expectedSequence 条无效")
                             break
                         }
+                        $recordJson = Get-TraceRecordRawJson -Line $lines[$i]
+                        $computedEntryHash = Get-TraceEntryHash `
+                            -Sequence $expectedSequence `
+                            -PreviousHash $previousHash `
+                            -RecordJson $recordJson
+                        if ($envelope.entryHash -ne $computedEntryHash) {
+                            [void]$errors.Add("ARTIFACT: Trace entryHash 在第 $expectedSequence 条与记录内容不匹配")
+                            break
+                        }
                         $previousHash = $envelope.entryHash
                     }
                     if ($null -ne $evaluation -and $null -ne $evaluation.trace_final_hash -and $previousHash -ne $evaluation.trace_final_hash) {
@@ -353,7 +437,6 @@ function New-ValidEvidenceFixture {
     param([string]$Root)
 
     New-Item -ItemType Directory -Path $Root -Force | Out-Null
-    $traceFinal = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
     $datasetHash = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
     $manifestHash = 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'
     $docHash = 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'
@@ -380,26 +463,34 @@ function New-ValidEvidenceFixture {
     $traceLines = New-Object System.Collections.Generic.List[string]
     $previous = 'GENESIS'
     for ($i = 1; $i -le 12; $i++) {
-        if ($i -eq 12) {
-            $entryHash = $traceFinal
+        $record = [ordered]@{
+            schemaVersion = '1.0'
+            traceId = ('{0:x32}' -f $i)
+            occurredAtUtc = '2026-01-01T00:00:00+00:00'
+            principalId = 'fixture-principal'
+            tenantId = 'enterprise-internal'
+            groups = @('employees')
+            questionSha256 = ('e' * 64)
+            snapshotSourceId = 'fixture-snapshot'
+            snapshotManifestSha256 = $manifestHash
+            policyVersion = 'gate-f-acl-v1'
+            decision = 'answered'
+            reasonCode = 'fixture'
+            selectedDocumentId = 'doc-finance-001'
+            citationCount = 1
         }
-        else {
-            $nibble = '{0:x}' -f ($i % 16)
-            $entryHash = ($nibble * 64)
-        }
-        $line = @{
+        $recordJson = $record | ConvertTo-Json -Compress -Depth 5
+        $entryHash = Get-TraceEntryHash -Sequence $i -PreviousHash $previous -RecordJson $recordJson
+        $line = [ordered]@{
             sequence = $i
             previousHash = $previous
             entryHash = $entryHash
-            record = @{
-                schemaVersion = '1.0'
-                traceId = ('{0:x32}' -f $i)
-                decision = 'answered'
-            }
+            record = $record
         } | ConvertTo-Json -Compress -Depth 5
         $traceLines.Add($line)
         $previous = $entryHash
     }
+    $traceFinal = $previous
     $traceFileName = 'gate-f-evaluation-traces-fixture.jsonl'
     $reportFileName = 'gate-f-evaluation.json'
     [IO.File]::WriteAllLines((Join-Path $Root $traceFileName), $traceLines, [Text.UTF8Encoding]::new($false))
@@ -576,6 +667,19 @@ function Invoke-EvidenceValidatorSelfTest {
                 }
                 Expect = 'ARTIFACT:*'
             }
+            @{
+                Name = 'trace-record-tamper'
+                Mutate = {
+                    param($dir)
+                    $evidence = Get-Content -LiteralPath (Join-Path $dir 'gate-f-evidence.json') -Raw | ConvertFrom-Json
+                    $tracePath = Join-Path $dir $evidence.evaluation.trace_artifact
+                    $lines = [System.Collections.Generic.List[string]]::new()
+                    Get-Content -LiteralPath $tracePath -Encoding UTF8 | ForEach-Object { [void]$lines.Add($_) }
+                    $lines[0] = $lines[0].Replace('fixture-principal', 'forged-principal')
+                    [IO.File]::WriteAllLines($tracePath, $lines, [Text.UTF8Encoding]::new($false))
+                }
+                Expect = 'ARTIFACT:*entryHash*'
+            }
         )
 
         foreach ($case in $cases) {
@@ -594,7 +698,7 @@ function Invoke-EvidenceValidatorSelfTest {
             Write-Host "SELF_TEST_CASE=PASS name=$($case.Name)"
         }
 
-        Write-Host 'SELF_TEST=PASS (valid evidence accepted; field/schema/count/hash/path/trace failures rejected)'
+        Write-Host 'SELF_TEST=PASS (valid evidence accepted; field/schema/count/hash/path/trace content failures rejected)'
     }
     finally {
         $resolvedFixture = [IO.Path]::GetFullPath($fixtureRoot)
