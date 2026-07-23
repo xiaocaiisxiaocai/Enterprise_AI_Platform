@@ -18,21 +18,164 @@ public sealed class DocumentRepository
         encoderShouldEmitUTF8Identifier: false,
         throwOnInvalidBytes: true);
 
+    private readonly object _sync = new();
+    private readonly Dictionary<string, ManagedDocument> _documents;
+    private long _revision;
+
     private DocumentRepository(
         IReadOnlyList<DocumentRecord> documents,
         string sourceId,
         string manifestSha256)
     {
-        Documents = documents;
+        _documents = documents.ToDictionary(
+            document => document.Id,
+            document => new ManagedDocument(
+                document,
+                KnowledgeLifecycleStatus.Published,
+                ExpiresAtUtc: null),
+            StringComparer.OrdinalIgnoreCase);
         SourceId = sourceId;
         ManifestSha256 = manifestSha256;
     }
 
-    public IReadOnlyList<DocumentRecord> Documents { get; }
+    public IReadOnlyList<DocumentRecord> Documents
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _documents.Values
+                    .Where(document => document.Status != KnowledgeLifecycleStatus.Deleted)
+                    .Select(document => document.Document)
+                    .OrderBy(document => document.Id, StringComparer.Ordinal)
+                    .ToArray();
+            }
+        }
+    }
 
     public string SourceId { get; }
 
     public string ManifestSha256 { get; }
+
+    public long Revision
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _revision;
+            }
+        }
+    }
+
+    public AuthorizedDocumentSnapshot GetAuthorizedSnapshot(
+        PocIdentity identity,
+        DateTimeOffset? nowUtc = null)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        var effectiveNow = nowUtc ?? DateTimeOffset.UtcNow;
+        lock (_sync)
+        {
+            var documents = _documents.Values
+                .Where(entry =>
+                    entry.Status == KnowledgeLifecycleStatus.Published &&
+                    (entry.ExpiresAtUtc is null || entry.ExpiresAtUtc > effectiveNow) &&
+                    string.Equals(
+                        identity.TenantId,
+                        entry.Document.TenantId,
+                        StringComparison.Ordinal) &&
+                    entry.Document.AllowedGroups.Any(identity.Groups.Contains))
+                .Select(entry => entry.Document)
+                .ToArray();
+            return new AuthorizedDocumentSnapshot(
+                _revision,
+                GetRevisionSourceId(_revision),
+                documents);
+        }
+    }
+
+    public void ReplaceAllowedGroups(string documentId, IEnumerable<string> allowedGroups)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(documentId);
+        ArgumentNullException.ThrowIfNull(allowedGroups);
+        var normalizedGroups = allowedGroups
+            .Select(group => group?.Trim())
+            .Where(group => !string.IsNullOrWhiteSpace(group))
+            .Cast<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (normalizedGroups.Length == 0)
+        {
+            throw new ArgumentException("文档 ACL 至少包含一个有效 Group。", nameof(allowedGroups));
+        }
+
+        lock (_sync)
+        {
+            var entry = GetMutableDocument(documentId);
+            EnsureNotDeleted(entry);
+            _documents[documentId] = entry with
+            {
+                Document = entry.Document with { AllowedGroups = normalizedGroups }
+            };
+            AdvanceRevision();
+        }
+    }
+
+    public void Withdraw(string documentId)
+    {
+        lock (_sync)
+        {
+            var entry = GetMutableDocument(documentId);
+            EnsureNotDeleted(entry);
+            _documents[documentId] = entry with
+            {
+                Status = KnowledgeLifecycleStatus.Withdrawn
+            };
+            AdvanceRevision();
+        }
+    }
+
+    public void Publish(string documentId)
+    {
+        lock (_sync)
+        {
+            var entry = GetMutableDocument(documentId);
+            EnsureNotDeleted(entry);
+            _documents[documentId] = entry with
+            {
+                Status = KnowledgeLifecycleStatus.Published,
+                ExpiresAtUtc = null
+            };
+            AdvanceRevision();
+        }
+    }
+
+    public void SetExpiration(string documentId, DateTimeOffset? expiresAtUtc)
+    {
+        lock (_sync)
+        {
+            var entry = GetMutableDocument(documentId);
+            EnsureNotDeleted(entry);
+            _documents[documentId] = entry with { ExpiresAtUtc = expiresAtUtc };
+            AdvanceRevision();
+        }
+    }
+
+    public void Delete(string documentId)
+    {
+        lock (_sync)
+        {
+            var entry = GetMutableDocument(documentId);
+            EnsureNotDeleted(entry);
+            _documents[documentId] = entry with
+            {
+                Status = KnowledgeLifecycleStatus.Deleted,
+                ExpiresAtUtc = null
+            };
+            AdvanceRevision();
+        }
+    }
 
     public static DocumentRepository LoadApprovedSnapshot(string manifestPath)
     {
@@ -263,4 +406,38 @@ public sealed class DocumentRepository
     {
         return Convert.ToHexString(SHA256.HashData(content)).ToLowerInvariant();
     }
+
+    private ManagedDocument GetMutableDocument(string documentId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(documentId);
+        return _documents.TryGetValue(documentId, out var entry)
+            ? entry
+            : throw new KeyNotFoundException("本地知识文档不存在。");
+    }
+
+    private static void EnsureNotDeleted(ManagedDocument entry)
+    {
+        if (entry.Status == KnowledgeLifecycleStatus.Deleted)
+        {
+            throw new InvalidOperationException("已删除文档不能重新发布或修改。");
+        }
+    }
+
+    private void AdvanceRevision()
+    {
+        _revision = checked(_revision + 1);
+    }
+
+    private string GetRevisionSourceId(long revision) =>
+        revision == 0 ? SourceId : $"{SourceId}:local-revision:{revision}";
+
+    private sealed record ManagedDocument(
+        DocumentRecord Document,
+        KnowledgeLifecycleStatus Status,
+        DateTimeOffset? ExpiresAtUtc);
 }
+
+public sealed record AuthorizedDocumentSnapshot(
+    long Revision,
+    string SourceRevisionId,
+    IReadOnlyList<DocumentRecord> Documents);

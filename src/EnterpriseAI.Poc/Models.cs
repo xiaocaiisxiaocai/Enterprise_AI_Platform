@@ -46,6 +46,13 @@ public sealed record ApprovedSourceDocument(
     string[] SearchTerms,
     string Sha256);
 
+public enum KnowledgeLifecycleStatus
+{
+    Published,
+    Withdrawn,
+    Deleted
+}
+
 public sealed class PocIdentity
 {
     public PocIdentity(string principalId, string tenantId, IEnumerable<string> groups)

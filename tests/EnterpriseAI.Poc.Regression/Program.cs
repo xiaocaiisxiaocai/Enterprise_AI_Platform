@@ -15,7 +15,7 @@ var dataPath = Path.Combine(AppContext.BaseDirectory, "Data", "approved-source.j
 var repository = DocumentRepository.LoadApprovedSnapshot(dataPath);
 var identities = new PocIdentityDirectory();
 var traceSink = new InMemorySearchTraceSink();
-var search = new PermissionAwareSearchService(repository, traceSink);
+var search = new PermissionAwareSearchService(repository, traceSink, identities);
 var failures = new List<string>();
 
 Run("REG-AUTH-001 未知身份不能解析", () =>
@@ -55,6 +55,97 @@ Run("REG-TEN-001 非配置 Tenant 默认拒绝", () =>
     var response = search.Query(foreignIdentity, "预算报销规则");
     AssertEqual("refused", response.Status, "非配置 Tenant 获得答案");
     AssertEqual(0, response.Citations.Count, "非配置 Tenant 获得引用");
+});
+
+Run("REG-AUTH-003 Group 撤权使已解析身份立即失效", () =>
+{
+    var localRepository = DocumentRepository.LoadApprovedSnapshot(dataPath);
+    var localIdentities = new PocIdentityDirectory();
+    var capturedIdentity = ResolveFrom(localIdentities, "alice-finance");
+    var localSearch = new PermissionAwareSearchService(
+        localRepository,
+        new InMemorySearchTraceSink(),
+        localIdentities);
+    AssertEqual("answered", localSearch.Query(capturedIdentity, "预算报销规则").Status, "撤权前未返回答案");
+
+    localIdentities.ReplaceGroups("alice-finance", ["employees"]);
+    var revoked = localSearch.Query(capturedIdentity, "预算报销规则");
+    AssertEqual("refused", revoked.Status, "已解析的旧身份在 Group 撤权后仍可访问");
+    AssertEqual(0, revoked.Citations.Count, "Group 撤权后仍返回旧引用");
+});
+
+Run("REG-AUTH-004 身份禁用与恢复按当前目录状态生效", () =>
+{
+    var localRepository = DocumentRepository.LoadApprovedSnapshot(dataPath);
+    var localIdentities = new PocIdentityDirectory();
+    var capturedIdentity = ResolveFrom(localIdentities, "alice-finance");
+    var localSearch = new PermissionAwareSearchService(
+        localRepository,
+        new InMemorySearchTraceSink(),
+        localIdentities);
+
+    localIdentities.SetEnabled("alice-finance", false);
+    AssertEqual("refused", localSearch.Query(capturedIdentity, "预算报销规则").Status, "禁用身份仍可访问");
+    localIdentities.SetEnabled("alice-finance", true);
+    AssertEqual("answered", localSearch.Query(capturedIdentity, "预算报销规则").Status, "恢复身份后仍被拒答");
+});
+
+Run("REG-LIFE-001 ACL 变更后旧授权立即失效", () =>
+{
+    var localRepository = DocumentRepository.LoadApprovedSnapshot(dataPath);
+    var localSearch = new PermissionAwareSearchService(localRepository, new InMemorySearchTraceSink());
+    localRepository.ReplaceAllowedGroups("doc-finance-001", ["hr"]);
+
+    AssertEqual("refused", localSearch.Query(Resolve("alice-finance"), "预算报销规则").Status, "旧 ACL 仍然生效");
+    var hrResponse = localSearch.Query(Resolve("bob-hr"), "预算报销规则");
+    AssertEqual("answered", hrResponse.Status, "新 ACL 未生效");
+    AssertEqual("doc-finance-001", SingleCitation(hrResponse).DocumentId, "新 ACL 返回错误文档");
+});
+
+Run("REG-LIFE-002 撤回后旧文档对象不能继续被检索", () =>
+{
+    var localRepository = DocumentRepository.LoadApprovedSnapshot(dataPath);
+    var localSearch = new PermissionAwareSearchService(localRepository, new InMemorySearchTraceSink());
+    var capturedDocument = localRepository.Documents.Single(document => document.Id == "doc-finance-001");
+    localRepository.Withdraw(capturedDocument.Id);
+
+    var response = localSearch.Query(Resolve("alice-finance"), "预算报销规则");
+    AssertEqual("refused", response.Status, "撤回后仍使用查询前捕获的文档");
+    AssertEqual(0, response.Citations.Count, "撤回后仍返回引用");
+});
+
+Run("REG-LIFE-003 撤回文档可以显式重新发布", () =>
+{
+    var localRepository = DocumentRepository.LoadApprovedSnapshot(dataPath);
+    var localSearch = new PermissionAwareSearchService(localRepository, new InMemorySearchTraceSink());
+    localRepository.Withdraw("doc-finance-001");
+    AssertEqual("refused", localSearch.Query(Resolve("alice-finance"), "预算报销规则").Status, "撤回未生效");
+
+    localRepository.Publish("doc-finance-001");
+    AssertEqual("answered", localSearch.Query(Resolve("alice-finance"), "预算报销规则").Status, "重新发布未生效");
+});
+
+Run("REG-LIFE-004 过期时间在每次查询时重新判定", () =>
+{
+    var localRepository = DocumentRepository.LoadApprovedSnapshot(dataPath);
+    var localSearch = new PermissionAwareSearchService(localRepository, new InMemorySearchTraceSink());
+    localRepository.SetExpiration("doc-finance-001", DateTimeOffset.UtcNow.AddMinutes(-1));
+    AssertEqual("refused", localSearch.Query(Resolve("alice-finance"), "预算报销规则").Status, "过期文档仍可检索");
+
+    localRepository.SetExpiration("doc-finance-001", DateTimeOffset.UtcNow.AddMinutes(10));
+    AssertEqual("answered", localSearch.Query(Resolve("alice-finance"), "预算报销规则").Status, "有效期内文档被错误拒绝");
+});
+
+Run("REG-LIFE-005 删除不可逆且删除传播到检索", () =>
+{
+    var localRepository = DocumentRepository.LoadApprovedSnapshot(dataPath);
+    var localSearch = new PermissionAwareSearchService(localRepository, new InMemorySearchTraceSink());
+    localRepository.Delete("doc-finance-001");
+    AssertEqual("refused", localSearch.Query(Resolve("alice-finance"), "预算报销规则").Status, "删除后仍可检索");
+    AssertFalse(localRepository.Documents.Any(document => document.Id == "doc-finance-001"), "删除后仍出现在当前文档投影");
+    ExpectThrows<InvalidOperationException>(
+        () => localRepository.Publish("doc-finance-001"),
+        "已删除文档被重新发布");
 });
 
 Run("REG-RAG-001 无证据时拒答", () =>
@@ -830,7 +921,7 @@ if (failures.Count > 0)
     return 1;
 }
 
-const int ExpectedRegressionCount = 63;
+const int ExpectedRegressionCount = 70;
 Console.WriteLine($"REGRESSION_TESTS=PASS count={ExpectedRegressionCount}");
 WriteFullGateFSummary(
     commitSha: TryReadGitCommit(),
@@ -871,6 +962,16 @@ async Task RunAsync(string name, Func<Task> test)
 PocIdentity Resolve(string user)
 {
     if (!identities.TryResolve(user, out var identity))
+    {
+        throw new InvalidOperationException($"测试身份 {user} 不存在");
+    }
+
+    return identity;
+}
+
+static PocIdentity ResolveFrom(PocIdentityDirectory directory, string user)
+{
+    if (!directory.TryResolve(user, out var identity))
     {
         throw new InvalidOperationException($"测试身份 {user} 不存在");
     }

@@ -12,7 +12,7 @@ $ErrorActionPreference = 'Stop'
 $script:ExpectedSchemaVersion = '1.0'
 $script:ExpectedEvidenceType = 'gate-f-local-contract'
 $script:ExpectedStatus = 'PassedLocalContract'
-$script:ExpectedRegressionCount = 63
+$script:ExpectedRegressionCount = 70
 $script:ExpectedEvaluationCases = 12
 $script:Sha256Pattern = '^[0-9a-f]{64}$'
 $script:CommitShaPattern = '^[0-9a-f]{7,64}$'
@@ -310,7 +310,7 @@ function Test-GateFEvidenceBundle {
                     [void]$errors.Add("ID: 非法回归标识 $id")
                 }
             }
-            # 完整 63 条 REG 标识必须全部出现，禁止子集“通过”。
+            # 完整 REG 标识必须全部出现，禁止子集“通过”。
             $requiredIds = @(
                 'REG-AUTH-001', 'REG-ACL-001', 'REG-ACL-002', 'REG-ACL-003', 'REG-TEN-001',
                 'REG-RAG-001', 'REG-CITE-001', 'REG-SRC-001', 'REG-SRC-002', 'REG-SRC-003',
@@ -324,7 +324,9 @@ function Test-GateFEvidenceBundle {
                 'REG-EVAL-001', 'REG-EVAL-002', 'REG-EVAL-003', 'REG-EVAL-004', 'REG-EVAL-005',
                 'REG-EVAL-006', 'REG-EVAL-007', 'REG-EVAL-008', 'REG-EVAL-009', 'REG-EVAL-010',
                 'REG-EVAL-011', 'REG-EVAL-012', 'REG-EVAL-013', 'REG-EVAL-014', 'REG-EVAL-015',
-                'REG-TRACE-012', 'REG-TRACE-013', 'REG-SRC-016', 'REG-SRC-017'
+                'REG-TRACE-012', 'REG-TRACE-013', 'REG-SRC-016', 'REG-SRC-017',
+                'REG-AUTH-003', 'REG-AUTH-004',
+                'REG-LIFE-001', 'REG-LIFE-002', 'REG-LIFE-003', 'REG-LIFE-004', 'REG-LIFE-005'
             )
             if ($requiredIds.Count -ne $script:ExpectedRegressionCount) {
                 [void]$errors.Add("ID: 必要回归清单长度与期望计数不一致")
@@ -454,10 +456,12 @@ function New-ValidEvidenceFixture {
         'REG-EVAL-001', 'REG-EVAL-002', 'REG-EVAL-003', 'REG-EVAL-004', 'REG-EVAL-005',
         'REG-EVAL-006', 'REG-EVAL-007', 'REG-EVAL-008', 'REG-EVAL-009', 'REG-EVAL-010',
         'REG-EVAL-011', 'REG-EVAL-012', 'REG-EVAL-013', 'REG-EVAL-014', 'REG-EVAL-015',
-        'REG-TRACE-012', 'REG-TRACE-013', 'REG-SRC-016', 'REG-SRC-017'
+        'REG-TRACE-012', 'REG-TRACE-013', 'REG-SRC-016', 'REG-SRC-017',
+        'REG-AUTH-003', 'REG-AUTH-004',
+        'REG-LIFE-001', 'REG-LIFE-002', 'REG-LIFE-003', 'REG-LIFE-004', 'REG-LIFE-005'
     )
-    if ($regressionIds.Count -ne 63) {
-        throw "证据夹具回归 ID 数量必须为 63，实际为 $($regressionIds.Count)"
+    if ($regressionIds.Count -ne 70) {
+        throw "证据夹具回归 ID 数量必须为 70，实际为 $($regressionIds.Count)"
     }
 
     $traceLines = New-Object System.Collections.Generic.List[string]
@@ -572,7 +576,7 @@ function New-ValidEvidenceFixture {
             restore = 'Passed'
             release_build = 'Passed'
             regression = 'Passed'
-            regression_count = 63
+            regression_count = 70
             regression_ids = $regressionIds
             docs_validation = 'Passed'
             deterministic_evaluation = 'Passed'
