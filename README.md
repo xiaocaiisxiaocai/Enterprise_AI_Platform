@@ -34,7 +34,7 @@ Invoke-RestMethod -Method Post -Uri 'http://localhost:5000/api/v1/query' -Header
 
 `dotnet run` 使用 `launchSettings.json` 进入 Development，并由 `appsettings.Development.json` 启用测试身份。其他环境默认禁用 `X-Poc-User`；若在 Production 显式启用，应用会拒绝启动。生产实现必须使用受信 IdP 声明解析身份，该测试头不得晋级到 Gate P。
 
-API Trace 默认写入被 Git 忽略的 `.gate-f\search-traces.jsonl`。证据脚本重新执行构建、47 条回归（含 `REG-EVAL-*`、扩展 `REG-API-*` 与 Trace 完整性）、12 个 Golden 用例和文档校验，并在 `artifacts\` 生成证据包、评测报告与评测 Trace；CI 为每个提交上传同结构 Artifact。评测报告不保存问题原文，只记录 Case ID、实际状态和引用。损坏数据集必须非零退出且不得产生伪造 Passed 报告。OIDC 等外部集成保持延期，直到获得企业权限和目标系统批准。
+API Trace 默认写入被 Git 忽略的 `.gate-f\search-traces.jsonl`。证据脚本重新执行构建、57 条回归（含 `REG-EVAL-*`、`REG-API-*`、Trace 与批准快照契约）、12 个 Golden 用例和文档校验，并在 `artifacts\` 生成证据包、评测报告与评测 Trace；CI 为每个提交上传同结构 Artifact。评测报告不保存问题原文，只记录 Case ID、实际状态和引用。损坏数据集必须非零退出且不得产生伪造 Passed 报告。OIDC 等外部集成保持延期，直到获得企业权限和目标系统批准。
 
 ## 文档入口
 

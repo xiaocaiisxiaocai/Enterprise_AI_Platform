@@ -180,9 +180,170 @@ Run("REG-SRC-005 来源文件不是有效 UTF-8 时拒绝启动", () =>
         relativePath: "fixtures/document.md",
         allowedGroups: ["employees"],
         approvedHash: ComputeSha256Bytes(invalidUtf8),
-        manifestPath => ExpectThrows<DecoderFallbackException>(
+        manifestPath => ExpectThrows<InvalidDataException>(
             () => DocumentRepository.LoadApprovedSnapshot(manifestPath),
             "无效 UTF-8 来源文件被接受"));
+});
+
+Run("REG-SRC-006 绝对路径来源被拒绝", () =>
+{
+    var absolute = Path.Combine(Path.GetTempPath(), "outside-approved.md");
+    File.WriteAllText(absolute, "批准内容", new UTF8Encoding(false));
+    try
+    {
+        WithTemporarySnapshot(
+            fileContent: "批准内容",
+            relativePath: absolute,
+            allowedGroups: ["employees"],
+            approvedHash: ComputeSha256("批准内容"),
+            manifestPath => ExpectThrows<InvalidDataException>(
+                () => DocumentRepository.LoadApprovedSnapshot(manifestPath),
+                "绝对路径来源被接受"));
+    }
+    finally
+    {
+        if (File.Exists(absolute))
+        {
+            File.Delete(absolute);
+        }
+    }
+});
+
+Run("REG-SRC-007 未知 JSON 字段被拒绝", () =>
+{
+    WithTemporaryRawManifest(
+        """
+        {
+          "sourceId": "regression-snapshot",
+          "tenantId": "enterprise-internal",
+          "owner": "regression-owner",
+          "classification": "synthetic",
+          "approvedFor": ["gate-f"],
+          "unexpectedField": true,
+          "documents": []
+        }
+        """,
+        manifestPath => ExpectThrows<InvalidDataException>(
+            () => DocumentRepository.LoadApprovedSnapshot(manifestPath),
+            "未知 JSON 字段被接受"));
+});
+
+Run("REG-SRC-008 空 Owner 被拒绝", () =>
+{
+    WithTemporarySnapshot(
+        fileContent: "批准内容",
+        relativePath: "fixtures/document.md",
+        allowedGroups: ["employees"],
+        approvedHash: ComputeSha256("批准内容"),
+        manifestPath => ExpectThrows<InvalidDataException>(
+            () => DocumentRepository.LoadApprovedSnapshot(manifestPath),
+            "空 Owner 被接受"),
+        owner: "  ");
+});
+
+Run("REG-SRC-009 空分类被拒绝", () =>
+{
+    WithTemporarySnapshot(
+        fileContent: "批准内容",
+        relativePath: "fixtures/document.md",
+        allowedGroups: ["employees"],
+        approvedHash: ComputeSha256("批准内容"),
+        manifestPath => ExpectThrows<InvalidDataException>(
+            () => DocumentRepository.LoadApprovedSnapshot(manifestPath),
+            "空分类被接受"),
+        classification: " ");
+});
+
+Run("REG-SRC-010 空版本被拒绝", () =>
+{
+    WithTemporarySnapshot(
+        fileContent: "批准内容",
+        relativePath: "fixtures/document.md",
+        allowedGroups: ["employees"],
+        approvedHash: ComputeSha256("批准内容"),
+        manifestPath => ExpectThrows<InvalidDataException>(
+            () => DocumentRepository.LoadApprovedSnapshot(manifestPath),
+            "空版本被接受"),
+        version: " ");
+});
+
+Run("REG-SRC-011 重复 ACL 被拒绝", () =>
+{
+    WithTemporarySnapshot(
+        fileContent: "批准内容",
+        relativePath: "fixtures/document.md",
+        allowedGroups: ["employees", "Employees"],
+        approvedHash: ComputeSha256("批准内容"),
+        manifestPath => ExpectThrows<InvalidDataException>(
+            () => DocumentRepository.LoadApprovedSnapshot(manifestPath),
+            "重复 ACL 被接受"));
+});
+
+Run("REG-SRC-012 路径规范化冲突被拒绝", () =>
+{
+    WithTemporaryMultiPathSnapshot(
+        fileContent: "批准内容",
+        relativePaths: ["fixtures/document.md", "fixtures/./document.md"],
+        allowedGroups: ["employees"],
+        approvedHash: ComputeSha256("批准内容"),
+        manifestPath => ExpectThrows<InvalidDataException>(
+            () => DocumentRepository.LoadApprovedSnapshot(manifestPath),
+            "路径规范化冲突被接受"));
+});
+
+Run("REG-SRC-013 超大文件被拒绝", () =>
+{
+    var oversized = new byte[DocumentRepository.MaxSourceFileBytes + 1];
+    Array.Fill(oversized, (byte)'A');
+    WithTemporaryBinarySnapshot(
+        fileContent: oversized,
+        relativePath: "fixtures/document.md",
+        allowedGroups: ["employees"],
+        approvedHash: ComputeSha256Bytes(oversized),
+        manifestPath => ExpectThrows<InvalidDataException>(
+            () => DocumentRepository.LoadApprovedSnapshot(manifestPath),
+            "超大文件被接受"));
+});
+
+Run("REG-SRC-014 哈希格式错误被拒绝", () =>
+{
+    WithTemporarySnapshot(
+        fileContent: "批准内容",
+        relativePath: "fixtures/document.md",
+        allowedGroups: ["employees"],
+        approvedHash: "not-a-valid-sha256-hash-value!!!!!!!!!!!!!!",
+        manifestPath => ExpectThrows<InvalidDataException>(
+            () => DocumentRepository.LoadApprovedSnapshot(manifestPath),
+            "非法哈希格式被接受"));
+});
+
+Run("REG-SRC-015 异常信息不泄漏正文或敏感路径", () =>
+{
+    WithTemporarySnapshot(
+        fileContent: "SECRET_BODY_CONTENT_SHOULD_NOT_LEAK",
+        relativePath: "fixtures/document.md",
+        allowedGroups: ["employees"],
+        approvedHash: ComputeSha256("不同哈希触发失败"),
+        manifestPath =>
+        {
+            try
+            {
+                DocumentRepository.LoadApprovedSnapshot(manifestPath);
+                throw new InvalidOperationException("哈希不一致未被拒绝");
+            }
+            catch (InvalidDataException exception)
+            {
+                AssertFalse(
+                    exception.Message.Contains("SECRET_BODY_CONTENT_SHOULD_NOT_LEAK", StringComparison.Ordinal),
+                    "异常消息泄漏了文档正文");
+                AssertFalse(
+                    exception.ToString().Contains("SECRET_BODY_CONTENT_SHOULD_NOT_LEAK", StringComparison.Ordinal),
+                    "异常详情泄漏了文档正文");
+                AssertFalse(
+                    exception.Message.Contains(Path.GetTempPath(), StringComparison.OrdinalIgnoreCase),
+                    "异常消息泄漏了临时目录绝对路径");
+            }
+        });
 });
 
 Run("REG-TRACE-004 Trace 被篡改时校验失败", () =>
@@ -560,7 +721,7 @@ if (failures.Count > 0)
     return 1;
 }
 
-const int ExpectedRegressionCount = 47;
+const int ExpectedRegressionCount = 57;
 Console.WriteLine($"REGRESSION_TESTS=PASS count={ExpectedRegressionCount}");
 return 0;
 
@@ -655,14 +816,20 @@ static void WithTemporarySnapshot(
     string relativePath,
     string[] allowedGroups,
     string approvedHash,
-    Action<string> test)
+    Action<string> test,
+    string owner = "regression-owner",
+    string classification = "synthetic",
+    string version = "1")
 {
     WithTemporaryBinarySnapshot(
         Encoding.UTF8.GetBytes(fileContent),
         relativePath,
         allowedGroups,
         approvedHash,
-        test);
+        test,
+        owner,
+        classification,
+        version);
 }
 
 static void WithTemporaryBinarySnapshot(
@@ -670,7 +837,46 @@ static void WithTemporaryBinarySnapshot(
     string relativePath,
     string[] allowedGroups,
     string approvedHash,
+    Action<string> test,
+    string owner = "regression-owner",
+    string classification = "synthetic",
+    string version = "1")
+{
+    WithTemporaryMultiPathBinarySnapshot(
+        fileContent,
+        [relativePath],
+        allowedGroups,
+        approvedHash,
+        test,
+        owner,
+        classification,
+        version);
+}
+
+static void WithTemporaryMultiPathSnapshot(
+    string fileContent,
+    string[] relativePaths,
+    string[] allowedGroups,
+    string approvedHash,
     Action<string> test)
+{
+    WithTemporaryMultiPathBinarySnapshot(
+        Encoding.UTF8.GetBytes(fileContent),
+        relativePaths,
+        allowedGroups,
+        approvedHash,
+        test);
+}
+
+static void WithTemporaryMultiPathBinarySnapshot(
+    byte[] fileContent,
+    string[] relativePaths,
+    string[] allowedGroups,
+    string approvedHash,
+    Action<string> test,
+    string owner = "regression-owner",
+    string classification = "synthetic",
+    string version = "1")
 {
     var regressionRoot = Path.Combine(
         Path.GetTempPath(),
@@ -680,27 +886,56 @@ static void WithTemporaryBinarySnapshot(
     Directory.CreateDirectory(fixtureDirectory);
     File.WriteAllBytes(Path.Combine(fixtureDirectory, "document.md"), fileContent);
 
-    var manifest = new ApprovedSourceManifest(
-        "regression-snapshot",
-        PocIdentityDirectory.EnterpriseTenantId,
-        "regression-owner",
-        "synthetic",
-        ["gate-f"],
-        [new ApprovedSourceDocument(
-            "regression-document",
-            relativePath,
-            "1",
+    var documents = relativePaths
+        .Select((path, index) => new ApprovedSourceDocument(
+            $"regression-document-{index + 1}",
+            path,
+            version,
             "回归文档",
             "测试节",
             allowedGroups,
             ["批准内容"],
-            approvedHash)]);
+            approvedHash))
+        .ToArray();
+    var manifest = new ApprovedSourceManifest(
+        "regression-snapshot",
+        PocIdentityDirectory.EnterpriseTenantId,
+        owner,
+        classification,
+        ["gate-f"],
+        documents);
     var manifestPath = Path.Combine(regressionRoot, "approved-source.json");
     File.WriteAllText(
         manifestPath,
         JsonSerializer.Serialize(manifest),
         new UTF8Encoding(false));
 
+    try
+    {
+        test(manifestPath);
+    }
+    finally
+    {
+        var expectedParent = Path.GetFullPath(Path.Combine(
+            Path.GetTempPath(),
+            "enterprise-ai-poc-regression")) + Path.DirectorySeparatorChar;
+        var resolvedRoot = Path.GetFullPath(regressionRoot);
+        if (resolvedRoot.StartsWith(expectedParent, StringComparison.OrdinalIgnoreCase))
+        {
+            Directory.Delete(resolvedRoot, recursive: true);
+        }
+    }
+}
+
+static void WithTemporaryRawManifest(string json, Action<string> test)
+{
+    var regressionRoot = Path.Combine(
+        Path.GetTempPath(),
+        "enterprise-ai-poc-regression",
+        Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(regressionRoot);
+    var manifestPath = Path.Combine(regressionRoot, "approved-source.json");
+    File.WriteAllText(manifestPath, json, new UTF8Encoding(false));
     try
     {
         test(manifestPath);

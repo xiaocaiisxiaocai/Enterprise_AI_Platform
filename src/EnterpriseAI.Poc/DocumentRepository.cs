@@ -7,6 +7,8 @@ namespace EnterpriseAI.Poc;
 
 public sealed class DocumentRepository
 {
+    public const int MaxSourceFileBytes = 256 * 1024;
+
     private static readonly JsonSerializerOptions SerializerOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -36,15 +38,24 @@ public sealed class DocumentRepository
     {
         if (!File.Exists(manifestPath))
         {
-            throw new FileNotFoundException("批准数据源清单不存在。", manifestPath);
+            throw new FileNotFoundException("批准数据源清单不存在。");
         }
 
         var manifestBytes = File.ReadAllBytes(manifestPath);
-        var manifest = JsonSerializer.Deserialize<ApprovedSourceManifest>(
-            manifestBytes,
-            SerializerOptions);
+        ApprovedSourceManifest manifest;
+        try
+        {
+            manifest = JsonSerializer.Deserialize<ApprovedSourceManifest>(
+                manifestBytes,
+                SerializerOptions)
+                ?? throw new InvalidDataException("批准数据源清单不能为空。");
+        }
+        catch (JsonException exception)
+        {
+            throw new InvalidDataException("批准数据源清单 JSON 无效或包含未知字段。", exception);
+        }
 
-        if (manifest is null || manifest.Documents is null || manifest.Documents.Length == 0)
+        if (manifest.Documents is null || manifest.Documents.Length == 0)
         {
             throw new InvalidDataException("批准数据源清单不能为空。");
         }
@@ -56,6 +67,7 @@ public sealed class DocumentRepository
 
         var documents = new List<DocumentRecord>(manifest.Documents.Length);
         var documentIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var resolvedPaths = new HashSet<string>(PathComparer);
         foreach (var entry in manifest.Documents)
         {
             ValidateEntry(entry);
@@ -65,14 +77,34 @@ public sealed class DocumentRepository
             }
 
             var sourcePath = ResolveSourcePath(rootPath, entry.RelativePath);
+            var canonicalRelative = NormalizeRelativePath(rootPath, sourcePath);
+            if (!resolvedPaths.Add(canonicalRelative))
+            {
+                throw new InvalidDataException($"批准数据源包含冲突的来源路径：{entry.Id}。");
+            }
+
             var sourceBytes = File.ReadAllBytes(sourcePath);
+            if (sourceBytes.Length > MaxSourceFileBytes)
+            {
+                throw new InvalidDataException($"文档 {entry.Id} 超过批准快照大小上限。");
+            }
+
             var actualHash = ComputeSha256(sourceBytes);
             if (!string.Equals(actualHash, entry.Sha256, StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidDataException($"文档 {entry.Id} 的 SHA-256 与批准清单不一致。");
             }
 
-            var content = StrictUtf8.GetString(sourceBytes).TrimEnd('\r', '\n');
+            string content;
+            try
+            {
+                content = StrictUtf8.GetString(sourceBytes).TrimEnd('\r', '\n');
+            }
+            catch (DecoderFallbackException exception)
+            {
+                throw new InvalidDataException($"文档 {entry.Id} 不是有效 UTF-8。", exception);
+            }
+
             if (string.IsNullOrWhiteSpace(content))
             {
                 throw new InvalidDataException($"文档 {entry.Id} 的来源文件为空。");
@@ -92,6 +124,9 @@ public sealed class DocumentRepository
 
         return new DocumentRepository(documents, manifest.SourceId, ComputeSha256(manifestBytes));
     }
+
+    private static StringComparer PathComparer =>
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 
     private static void ValidateManifest(ApprovedSourceManifest manifest)
     {
@@ -123,6 +158,8 @@ public sealed class DocumentRepository
             entry.AllowedGroups is null ||
             entry.AllowedGroups.Length == 0 ||
             entry.AllowedGroups.Any(string.IsNullOrWhiteSpace) ||
+            entry.AllowedGroups.Distinct(StringComparer.OrdinalIgnoreCase).Count() !=
+                entry.AllowedGroups.Length ||
             entry.SearchTerms is null ||
             entry.SearchTerms.Length == 0 ||
             entry.SearchTerms.Any(string.IsNullOrWhiteSpace) ||
@@ -130,13 +167,18 @@ public sealed class DocumentRepository
             entry.Sha256.Length != 64 ||
             entry.Sha256.Any(character => !Uri.IsHexDigit(character)))
         {
-            throw new InvalidDataException($"文档 {entry.Id} 缺少有效的权限、检索或完整性元数据。");
+            // 不回显路径或文件正文，仅使用文档 ID（可能为空）。
+            var documentLabel = string.IsNullOrWhiteSpace(entry.Id) ? "(missing-id)" : entry.Id;
+            throw new InvalidDataException($"文档 {documentLabel} 缺少有效的权限、检索或完整性元数据。");
         }
     }
 
     private static string ResolveSourcePath(string rootPath, string relativePath)
     {
-        if (Path.IsPathRooted(relativePath))
+        if (Path.IsPathRooted(relativePath) ||
+            relativePath.Contains(':', StringComparison.Ordinal) ||
+            relativePath.StartsWith("\\\\", StringComparison.Ordinal) ||
+            relativePath.StartsWith("//", StringComparison.Ordinal))
         {
             throw new InvalidDataException("来源文件路径必须相对于清单目录。");
         }
@@ -155,7 +197,7 @@ public sealed class DocumentRepository
 
         if (!File.Exists(fullPath))
         {
-            throw new FileNotFoundException("批准来源文件不存在。", fullPath);
+            throw new InvalidDataException("批准来源文件不存在或不可访问。");
         }
 
         var relativeSegments = Path.GetRelativePath(rootPath, fullPath)
@@ -169,6 +211,13 @@ public sealed class DocumentRepository
         }
 
         return fullPath;
+    }
+
+    private static string NormalizeRelativePath(string rootPath, string fullPath)
+    {
+        var relative = Path.GetRelativePath(rootPath, fullPath)
+            .Replace('\\', '/');
+        return OperatingSystem.IsWindows() ? relative.ToLowerInvariant() : relative;
     }
 
     private static void RejectReparsePoint(string path)
