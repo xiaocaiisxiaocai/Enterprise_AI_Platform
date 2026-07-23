@@ -7,6 +7,8 @@ param(
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $testProject = Join-Path $repoRoot "tests\EnterpriseAI.Poc.Regression\EnterpriseAI.Poc.Regression.csproj"
+$evaluationProject = Join-Path $repoRoot "tests\EnterpriseAI.Poc.Evaluation\EnterpriseAI.Poc.Evaluation.csproj"
+$evaluationDatasetPath = Join-Path $repoRoot "evaluation\gate-f-golden-v1.json"
 $manifestPath = Join-Path $repoRoot "src\EnterpriseAI.Poc\Data\approved-source.json"
 $validatorPath = Join-Path $repoRoot "scripts\Validate-Docs.ps1"
 $resolvedOutputPath = if ([IO.Path]::IsPathRooted($OutputPath)) {
@@ -43,6 +45,53 @@ try {
     $validationOutput | ForEach-Object { Write-Host $_ }
     if ($validationExitCode -ne 0) {
         throw "文档验证失败，退出码：$validationExitCode"
+    }
+
+    $evaluationRestoreOutput = @(& dotnet restore $evaluationProject 2>&1)
+    $evaluationRestoreExitCode = $LASTEXITCODE
+    $evaluationRestoreOutput | ForEach-Object { Write-Host $_ }
+    if ($evaluationRestoreExitCode -ne 0) {
+        throw "评测项目 restore 失败，退出码：$evaluationRestoreExitCode"
+    }
+
+    $evaluationBuildOutput = @(& dotnet build $evaluationProject --configuration Release --no-restore 2>&1)
+    $evaluationBuildExitCode = $LASTEXITCODE
+    $evaluationBuildOutput | ForEach-Object { Write-Host $_ }
+    if ($evaluationBuildExitCode -ne 0) {
+        throw "评测项目 build 失败，退出码：$evaluationBuildExitCode"
+    }
+
+    $outputDirectory = Split-Path -Parent $resolvedOutputPath
+    New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
+    $evaluationReportPath = Join-Path $outputDirectory "gate-f-evaluation.json"
+$evaluationRunId = "{0}-{1}" -f [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(), $PID
+$evaluationTracePath = Join-Path $outputDirectory "gate-f-evaluation-traces-$evaluationRunId.jsonl"
+    $evaluationOutput = @(& dotnet run `
+        --project $evaluationProject `
+        --configuration Release `
+        --no-build `
+        -- `
+        $evaluationDatasetPath `
+        $manifestPath `
+        $evaluationReportPath `
+        $evaluationTracePath 2>&1)
+    $evaluationExitCode = $LASTEXITCODE
+    $evaluationOutput | ForEach-Object { Write-Host $_ }
+    if ($evaluationExitCode -ne 0) {
+        throw "Gate F 确定性评测失败，退出码：$evaluationExitCode"
+    }
+
+    $evaluation = Get-Content -LiteralPath $evaluationReportPath -Raw | ConvertFrom-Json
+    if ($evaluation.status -ne "PassedLocalDeterministicEvaluation" -or
+        -not $evaluation.negative_self_test_passed -or
+        $evaluation.metrics.total_cases -ne 12 -or
+        $evaluation.metrics.passed_cases -ne 12 -or
+        $evaluation.metrics.unauthorized_citation_count -ne 0 -or
+        $evaluation.metrics.case_pass_rate -ne 1 -or
+        $evaluation.metrics.citation_exact_match_rate -ne 1 -or
+        $evaluation.metrics.refusal_consistency_rate -ne 1 -or
+        $evaluation.trace_entry_count -ne 12) {
+        throw "Gate F 确定性评测未满足硬门禁。"
     }
 
     $passLines = @($regressionOutput | Where-Object { $_.ToString() -match '^PASS (REG-[A-Z]+-[0-9]+) ' })
@@ -117,6 +166,24 @@ try {
             hash_chain_regression = "REG-TRACE-003"
             tamper_regression = "REG-TRACE-004"
         }
+        evaluation = [ordered]@{
+            type = $evaluation.evaluation_type
+            status = $evaluation.status
+            dataset_id = $evaluation.dataset_id
+            dataset_version = $evaluation.dataset_version
+            dataset_sha256 = $evaluation.dataset_sha256
+            negative_self_test_passed = $evaluation.negative_self_test_passed
+            total_cases = $evaluation.metrics.total_cases
+            passed_cases = $evaluation.metrics.passed_cases
+            unauthorized_citation_count = $evaluation.metrics.unauthorized_citation_count
+            case_pass_rate = $evaluation.metrics.case_pass_rate
+            citation_exact_match_rate = $evaluation.metrics.citation_exact_match_rate
+            refusal_consistency_rate = $evaluation.metrics.refusal_consistency_rate
+            trace_entry_count = $evaluation.trace_entry_count
+            trace_final_hash = $evaluation.trace_final_hash
+            report_artifact = [IO.Path]::GetFileName($evaluationReportPath)
+            trace_artifact = $evaluation.trace_artifact_file
+        }
         verification = [ordered]@{
             restore = "Passed"
             release_build = "Passed"
@@ -124,16 +191,15 @@ try {
             regression_count = $testIds.Count
             regression_ids = $testIds
             docs_validation = "Passed"
+            deterministic_evaluation = "Passed"
         }
         limitations = @(
             "No real OIDC or dynamic group revocation",
             "No real SharePoint or business data approval",
-            "No PostgreSQL, pgvector, model, production SLO, or AI evaluation"
+            "No PostgreSQL, pgvector, model, production SLO, or probabilistic AI evaluation"
         )
     }
 
-    $outputDirectory = Split-Path -Parent $resolvedOutputPath
-    New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
     $json = $bundle | ConvertTo-Json -Depth 10
     [IO.File]::WriteAllText($resolvedOutputPath, $json, [Text.UTF8Encoding]::new($false))
     Write-Host "GATE_F_EVIDENCE=PASS path=$resolvedOutputPath"

@@ -2,7 +2,7 @@
 
 ## 项目结构与模块组织
 
-本仓库包含企业 AI 平台目标设计与 Gate F 权限感知检索 PoC。27 个架构 Markdown 文件位于 `docs\`，`README.md` 是运行入口。`src\EnterpriseAI.Poc` 提供 .NET 8 最小 API、批准快照、权限预过滤和本地哈希链 Trace；`tests\EnterpriseAI.Poc.Regression` 是无外部服务的回归执行器。`scripts\Validate-Docs.ps1` 校验文档，`scripts\Export-GateFEvidence.ps1` 生成本地证据包；`.github\workflows\docs-quality.yml` 在 push 和 PR 时执行门禁。新增设计主题使用 `NN_主题.md` 并同步索引。
+本仓库包含企业 AI 平台目标设计与 Gate F 权限感知检索 PoC。27 个架构 Markdown 文件位于 `docs\`，`README.md` 是运行入口。`src\EnterpriseAI.Poc` 提供 .NET 8 最小 API、批准快照、权限预过滤和本地哈希链 Trace；`tests\EnterpriseAI.Poc.Regression` 运行缺陷回归，`tests\EnterpriseAI.Poc.Evaluation` 根据 `evaluation\gate-f-golden-v1.json` 运行本地确定性评测。`scripts\Validate-Docs.ps1` 校验文档，`scripts\Export-GateFEvidence.ps1` 生成证据包；`.github\workflows\docs-quality.yml` 在 push 和 PR 时执行门禁。
 
 ## 架构约束
 
@@ -23,7 +23,7 @@ rg -n 'TODO|FIXME|TBD|待定' .\docs
 rg -n '^#|^```' .\docs
 ```
 
-文档脚本先证明校验器能拒绝损坏样例，再检查标题、围栏、相对链接、JSON、版本和标识一致性。证据脚本重新执行 Release 构建、19 条回归和文档门禁，并记录 commit、环境与来源哈希。PoC 构建启用警告即错误；还需人工预览 Markdown/Mermaid 并验证 YAML 语义。
+文档脚本先证明校验器能拒绝损坏样例，再检查标题、围栏、相对链接、JSON、版本和标识一致性。证据脚本重新执行 Release 构建、19 条回归、12 个 Golden 用例和文档门禁，并记录 commit、环境、来源/数据集哈希与评测 Trace 锚点。PoC 构建启用警告即错误；还需人工预览 Markdown/Mermaid 并验证 YAML 语义。
 
 ## 编写风格与命名
 
@@ -31,7 +31,7 @@ rg -n '^#|^```' .\docs
 
 ## 验证要求
 
-文档变更必须检查术语、链接和跨文档一致性。需求变更回写 SRS；API 或实体变更联动服务边界、数据库模型和接口设计。修改 `Data\fixtures` 时必须同步更新 `approved-source.json` 的 SHA-256、ACL 和版本，并运行全部回归。Gate F 的 `REG-*` 回归只证明本地确定性契约，不得描述为真实 IdP、SharePoint、向量检索、AI Evaluation 或生产安全证据。发现缺陷时先增加或强化回归场景，再修复实现。
+文档变更必须检查术语、链接和跨文档一致性。需求变更回写 SRS；API 或实体变更联动服务边界、数据库模型和接口设计。修改 `Data\fixtures` 时必须同步更新 `approved-source.json` 的 SHA-256、ACL 和版本；修改 Golden Dataset 时必须保留版本、负向自测和硬门禁。Gate F 回归与 Golden 结果只证明本地确定性契约，不得描述为真实 IdP、SharePoint、向量检索、概率性 AI Evaluation 或生产安全证据。发现缺陷时先增加或强化回归场景，再修复实现。
 
 ## Commit 与 Pull Request
 

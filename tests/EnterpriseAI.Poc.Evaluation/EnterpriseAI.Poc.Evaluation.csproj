@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>EnterpriseAI.Poc.Evaluation</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\EnterpriseAI.Poc\EnterpriseAI.Poc.csproj" />
+  </ItemGroup>
+</Project>
