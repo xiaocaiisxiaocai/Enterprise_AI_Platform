@@ -101,10 +101,10 @@ $evaluationTracePath = Join-Path $outputDirectory "gate-f-evaluation-traces-$eva
         }
     })
     $regressionSummary = $regressionOutput | Where-Object {
-        $_.ToString() -match '^REGRESSION_TESTS=PASS count=19$'
+        $_.ToString() -match '^REGRESSION_TESTS=PASS count=32$'
     }
-    if ($testIds.Count -ne 19 -or $null -eq $regressionSummary) {
-        throw "回归输出与 19 条 Gate F 契约不一致。"
+    if ($testIds.Count -ne 32 -or $null -eq $regressionSummary) {
+        throw "回归输出与 32 条 Gate F 契约不一致。"
     }
 
     $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json

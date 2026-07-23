@@ -1,4 +1,5 @@
 using EnterpriseAI.Poc;
+using EnterpriseAI.Poc.Evaluation;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.Extensions.DependencyInjection;
@@ -294,6 +295,12 @@ await RunAsync("REG-API-001 HTTP 契约执行身份、ACL 与输入边界", asyn
         "Production 默认配置接受了 X-Poc-User");
 });
 
+var goldenDatasetPath = ResolveGoldenDatasetPath();
+foreach (var (id, name, test) in GoldenDatasetContractRegression.BuildCases(repository, goldenDatasetPath))
+{
+    Run($"{id} {name}", test);
+}
+
 if (failures.Count > 0)
 {
     Console.Error.WriteLine($"REGRESSION_TESTS=FAILED count={failures.Count}");
@@ -305,7 +312,8 @@ if (failures.Count > 0)
     return 1;
 }
 
-Console.WriteLine("REGRESSION_TESTS=PASS count=19");
+const int ExpectedRegressionCount = 32;
+Console.WriteLine($"REGRESSION_TESTS=PASS count={ExpectedRegressionCount}");
 return 0;
 
 void Run(string name, Action test)
@@ -515,6 +523,24 @@ static SearchTraceRecord CreateTraceRecord(int index)
         "authorized_evidence_found",
         "regression-document",
         1);
+}
+
+static string ResolveGoldenDatasetPath()
+{
+    var candidates = new[]
+    {
+        Path.Combine(AppContext.BaseDirectory, "evaluation", "gate-f-golden-v1.json"),
+        Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "evaluation", "gate-f-golden-v1.json"))
+    };
+    foreach (var candidate in candidates)
+    {
+        if (File.Exists(candidate))
+        {
+            return candidate;
+        }
+    }
+
+    throw new FileNotFoundException("未找到 evaluation\\gate-f-golden-v1.json。");
 }
 
 file sealed class FailingSearchTraceSink : ISearchTraceSink

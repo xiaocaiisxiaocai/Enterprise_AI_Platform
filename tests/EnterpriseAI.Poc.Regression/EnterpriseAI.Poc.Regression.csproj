@@ -5,8 +5,12 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\EnterpriseAI.Poc\EnterpriseAI.Poc.csproj" />
+    <ProjectReference Include="..\EnterpriseAI.Poc.Evaluation\EnterpriseAI.Poc.Evaluation.csproj" />
     <Content Include="..\..\src\EnterpriseAI.Poc\Data\**\*"
              Link="Data\%(RecursiveDir)%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\evaluation\gate-f-golden-v1.json"
+             Link="evaluation\gate-f-golden-v1.json"
              CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
