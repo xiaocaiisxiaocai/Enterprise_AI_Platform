@@ -23,7 +23,7 @@ rg -n 'TODO|FIXME|TBD|待定' .\docs
 rg -n '^#|^```' .\docs
 ```
 
-文档脚本先证明校验器能拒绝损坏样例，再检查标题、围栏、相对链接、JSON、版本和标识一致性。证据脚本重新执行 Release 构建、41 条回归（含 `REG-EVAL-*` 与扩展 `REG-API-*`）、12 个 Golden 用例和文档门禁，并记录 commit、环境、来源/数据集哈希与评测 Trace 锚点。PoC 构建启用警告即错误；还需人工预览 Markdown/Mermaid 并验证 YAML 语义。
+文档脚本先证明校验器能拒绝损坏样例，再检查标题、围栏、相对链接、JSON、版本和标识一致性。证据脚本重新执行 Release 构建、47 条回归（含 `REG-EVAL-*`、扩展 `REG-API-*` 与 Trace 完整性）、12 个 Golden 用例和文档门禁，并记录 commit、环境、来源/数据集哈希与评测 Trace 锚点。PoC 构建启用警告即错误；还需人工预览 Markdown/Mermaid 并验证 YAML 语义。
 
 ## 编写风格与命名
 

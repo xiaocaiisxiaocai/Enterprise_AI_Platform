@@ -212,6 +212,127 @@ Run("REG-TRACE-005 Trace 写入失败时检索失败关闭", () =>
         "Trace 写入失败后仍返回检索结果");
 });
 
+Run("REG-TRACE-006 Trace 结构白名单与隐私字段", () =>
+{
+    WithTemporaryTraceFile(path =>
+    {
+        const string question = "预算报销规则隐私探针-UNIQUE";
+        var sink = new HashChainedJsonLineTraceSink(path);
+        var search = new PermissionAwareSearchService(repository, sink);
+        search.Query(Resolve("alice-finance"), question);
+        search.Query(Resolve("bob-hr"), question);
+
+        var validation = HashChainedJsonLineTraceSink.Validate(path);
+        AssertEqual(2L, validation.EntryCount, "白名单场景 Trace 条目数不正确");
+
+        var raw = File.ReadAllText(path);
+        AssertFalse(raw.Contains(question, StringComparison.Ordinal), "Trace 保存了问题原文");
+        AssertFalse(raw.Contains("成本中心", StringComparison.Ordinal), "Trace 保存了文档正文");
+        AssertFalse(raw.Contains("身份材料", StringComparison.Ordinal), "Trace 保存了隐藏文档正文");
+        AssertFalse(raw.Contains("\"answer\"", StringComparison.OrdinalIgnoreCase), "Trace 包含答案字段");
+        AssertFalse(raw.Contains("\"question\"", StringComparison.OrdinalIgnoreCase), "Trace 包含问题原文字段");
+
+        var jsonOptions = new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            PropertyNameCaseInsensitive = true
+        };
+        foreach (var line in File.ReadLines(path))
+        {
+            var envelope = JsonSerializer.Deserialize<SearchTraceEnvelope>(line, jsonOptions)
+                ?? throw new InvalidOperationException("无法反序列化 Trace");
+            HashChainedJsonLineTraceSink.ValidateRecordContract(envelope.Record);
+            AssertEqual(repository.SourceId, envelope.Record.SnapshotSourceId, "缺少快照锚点");
+            AssertEqual(repository.ManifestSha256, envelope.Record.SnapshotManifestSha256, "缺少清单哈希锚点");
+            AssertEqual(PermissionAwareSearchService.PolicyVersion, envelope.Record.PolicyVersion, "缺少策略锚点");
+        }
+
+        var refusedLine = File.ReadLines(path).ElementAt(1);
+        AssertFalse(refusedLine.Contains("doc-finance-001", StringComparison.Ordinal), "拒答 Trace 泄漏隐藏文档元数据");
+    });
+});
+
+Run("REG-TRACE-007 Trace 截断篡改检测", () =>
+{
+    WithTemporaryTraceFile(path =>
+    {
+        var sink = new HashChainedJsonLineTraceSink(path);
+        sink.Record(CreateTraceRecord(1));
+        sink.Record(CreateTraceRecord(2));
+        var lines = File.ReadAllLines(path);
+        var half = Math.Max(12, lines[1].Length / 2);
+        File.WriteAllText(
+            path,
+            lines[0] + Environment.NewLine + lines[1][..half],
+            new UTF8Encoding(false));
+        ExpectThrows<Exception>(
+            () => HashChainedJsonLineTraceSink.Validate(path),
+            "截断 Trace 通过校验");
+    });
+});
+
+Run("REG-TRACE-008 Trace 重排篡改检测", () =>
+{
+    WithTemporaryTraceFile(path =>
+    {
+        var sink = new HashChainedJsonLineTraceSink(path);
+        sink.Record(CreateTraceRecord(1));
+        sink.Record(CreateTraceRecord(2));
+        var lines = File.ReadAllLines(path);
+        File.WriteAllLines(path, [lines[1], lines[0]], new UTF8Encoding(false));
+        ExpectThrows<InvalidDataException>(
+            () => HashChainedJsonLineTraceSink.Validate(path),
+            "重排 Trace 通过校验");
+    });
+});
+
+Run("REG-TRACE-009 Trace 重复记录篡改检测", () =>
+{
+    WithTemporaryTraceFile(path =>
+    {
+        var sink = new HashChainedJsonLineTraceSink(path);
+        sink.Record(CreateTraceRecord(1));
+        sink.Record(CreateTraceRecord(2));
+        var lines = File.ReadAllLines(path);
+        File.WriteAllLines(path, [lines[0], lines[1], lines[1]], new UTF8Encoding(false));
+        ExpectThrows<InvalidDataException>(
+            () => HashChainedJsonLineTraceSink.Validate(path),
+            "重复 Trace 记录通过校验");
+    });
+});
+
+Run("REG-TRACE-010 Trace 删除中间记录篡改检测", () =>
+{
+    WithTemporaryTraceFile(path =>
+    {
+        var sink = new HashChainedJsonLineTraceSink(path);
+        sink.Record(CreateTraceRecord(1));
+        sink.Record(CreateTraceRecord(2));
+        sink.Record(CreateTraceRecord(3));
+        var lines = File.ReadAllLines(path);
+        File.WriteAllLines(path, [lines[0], lines[2]], new UTF8Encoding(false));
+        ExpectThrows<InvalidDataException>(
+            () => HashChainedJsonLineTraceSink.Validate(path),
+            "删除中间 Trace 记录后通过校验");
+    });
+});
+
+Run("REG-TRACE-011 Trace 追加伪造记录检测", () =>
+{
+    WithTemporaryTraceFile(path =>
+    {
+        var sink = new HashChainedJsonLineTraceSink(path);
+        sink.Record(CreateTraceRecord(1));
+        var forged = """
+            {"sequence":2,"previousHash":"deadbeef","entryHash":"cafebabe","record":{"schemaVersion":"1.0","traceId":"forged","occurredAtUtc":"1970-01-01T00:00:00+00:00","principalId":"x","tenantId":"enterprise-internal","groups":[],"questionSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","snapshotSourceId":"x","snapshotManifestSha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","policyVersion":"gate-f-acl-v1","decision":"answered","reasonCode":"forged","selectedDocumentId":null,"citationCount":0}}
+            """;
+        File.AppendAllText(path, forged.Trim() + Environment.NewLine, new UTF8Encoding(false));
+        ExpectThrows<InvalidDataException>(
+            () => HashChainedJsonLineTraceSink.Validate(path),
+            "追加伪造 Trace 记录通过校验");
+    });
+});
+
 await RunAsync("REG-API-001 HTTP 契约执行身份、ACL 与 Tenant 注入边界", async () =>
 {
     var apiTraceSink = new InMemorySearchTraceSink();
@@ -439,7 +560,7 @@ if (failures.Count > 0)
     return 1;
 }
 
-const int ExpectedRegressionCount = 41;
+const int ExpectedRegressionCount = 47;
 Console.WriteLine($"REGRESSION_TESTS=PASS count={ExpectedRegressionCount}");
 return 0;
 

@@ -123,6 +123,32 @@ public sealed class HashChainedJsonLineTraceSink : ISearchTraceSink
         }
     }
 
+    public static readonly HashSet<string> AllowedRecordPropertyNames = new(StringComparer.Ordinal)
+    {
+        "schemaVersion",
+        "traceId",
+        "occurredAtUtc",
+        "principalId",
+        "tenantId",
+        "groups",
+        "questionSha256",
+        "snapshotSourceId",
+        "snapshotManifestSha256",
+        "policyVersion",
+        "decision",
+        "reasonCode",
+        "selectedDocumentId",
+        "citationCount"
+    };
+
+    public static readonly HashSet<string> AllowedEnvelopePropertyNames = new(StringComparer.Ordinal)
+    {
+        "sequence",
+        "previousHash",
+        "entryHash",
+        "record"
+    };
+
     public static TraceChainValidation Validate(string path)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
@@ -140,8 +166,18 @@ public sealed class HashChainedJsonLineTraceSink : ISearchTraceSink
                 throw new InvalidDataException("Trace 哈希链包含空记录。");
             }
 
+            using var document = JsonDocument.Parse(line);
+            AssertWhitelist(document.RootElement, AllowedEnvelopePropertyNames, "envelope");
+            if (!document.RootElement.TryGetProperty("record", out var recordElement))
+            {
+                throw new InvalidDataException("Trace 记录缺少 record 字段。");
+            }
+
+            AssertWhitelist(recordElement, AllowedRecordPropertyNames, "record");
+
             var envelope = JsonSerializer.Deserialize<SearchTraceEnvelope>(line, SerializerOptions)
                 ?? throw new InvalidDataException("Trace 记录无法反序列化。");
+            ValidateRecordContract(envelope.Record);
             if (envelope.Sequence != expectedSequence ||
                 !string.Equals(envelope.PreviousHash, previousHash, StringComparison.Ordinal) ||
                 !string.Equals(
@@ -157,6 +193,47 @@ public sealed class HashChainedJsonLineTraceSink : ISearchTraceSink
         }
 
         return new TraceChainValidation(expectedSequence - 1, previousHash);
+    }
+
+    public static void ValidateRecordContract(SearchTraceRecord record)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        if (record.SchemaVersion != PermissionAwareSearchService.TraceSchemaVersion ||
+            string.IsNullOrWhiteSpace(record.TraceId) ||
+            string.IsNullOrWhiteSpace(record.PrincipalId) ||
+            string.IsNullOrWhiteSpace(record.TenantId) ||
+            record.Groups is null ||
+            record.QuestionSha256.Length != 64 ||
+            record.QuestionSha256.Any(character => !Uri.IsHexDigit(character)) ||
+            string.IsNullOrWhiteSpace(record.SnapshotSourceId) ||
+            record.SnapshotManifestSha256.Length != 64 ||
+            record.SnapshotManifestSha256.Any(character => !Uri.IsHexDigit(character)) ||
+            record.PolicyVersion != PermissionAwareSearchService.PolicyVersion ||
+            record.Decision is not ("answered" or "refused") ||
+            string.IsNullOrWhiteSpace(record.ReasonCode) ||
+            record.CitationCount < 0)
+        {
+            throw new InvalidDataException("Trace 记录缺少策略/快照锚点或字段契约无效。");
+        }
+    }
+
+    private static void AssertWhitelist(
+        JsonElement element,
+        HashSet<string> allowedNames,
+        string scope)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            throw new InvalidDataException($"Trace {scope} 必须是 JSON 对象。");
+        }
+
+        foreach (var property in element.EnumerateObject())
+        {
+            if (!allowedNames.Contains(property.Name))
+            {
+                throw new InvalidDataException($"Trace {scope} 包含未授权字段：{property.Name}。");
+            }
+        }
     }
 
     private static string ComputeEntryHash(
