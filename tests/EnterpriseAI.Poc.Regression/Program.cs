@@ -1116,6 +1116,121 @@ Run("REG-ING-010 无效摄取批次不会部分发布", () =>
     AssertFalse(localRepository.Documents.Any(document => document.Id == valid.Id), "失败批次部分发布了有效候选");
 });
 
+Run("REG-STATE-001 身份 Group 在重启后恢复", () =>
+{
+    WithTemporaryStateRoot(stateRoot =>
+    {
+        var store = new LocalStateStore(stateRoot);
+        var firstDirectory = new PocIdentityDirectory(store);
+        firstDirectory.ReplaceGroups("alice-finance", ["employees"]);
+        AssertFalse(store.FinalHash == LocalStateStore.GenesisHash, "身份变更未形成状态哈希链");
+
+        var reloadedDirectory = new PocIdentityDirectory(new LocalStateStore(stateRoot));
+        var reloaded = ResolveFrom(reloadedDirectory, "alice-finance");
+        AssertFalse(reloaded.Groups.Contains("finance"), "重启后已撤销 Group 复活");
+    });
+});
+
+Run("REG-STATE-002 文档撤回在重启后保持生效", () =>
+{
+    WithTemporaryStateRoot(stateRoot =>
+    {
+        var store = new LocalStateStore(stateRoot);
+        var firstRepository = DocumentRepository.LoadApprovedSnapshot(dataPath, store);
+        firstRepository.Withdraw("doc-finance-001");
+
+        var reloadedRepository = DocumentRepository.LoadApprovedSnapshot(
+            dataPath,
+            new LocalStateStore(stateRoot));
+        var reloadedSearch = new PermissionAwareSearchService(
+            reloadedRepository,
+            new InMemorySearchTraceSink());
+        AssertEqual(
+            "refused",
+            reloadedSearch.Query(Resolve("alice-finance"), "预算报销规则").Status,
+            "重启后已撤回文档重新可见");
+    });
+});
+
+Run("REG-STATE-003 状态事件被篡改时拒绝恢复", () =>
+{
+    WithTemporaryStateRoot(stateRoot =>
+    {
+        var store = new LocalStateStore(stateRoot);
+        store.Append(new LocalStateEvent(
+            "identity_enabled_changed",
+            "alice-finance",
+            Enabled: false));
+        var eventPath = Directory.GetFiles(stateRoot, "*.json").Single();
+        var content = File.ReadAllText(eventPath);
+        File.WriteAllText(
+            eventPath,
+            content.Replace("\"enabled\":false", "\"enabled\":true", StringComparison.Ordinal),
+            new UTF8Encoding(false));
+        ExpectThrows<InvalidDataException>(
+            () =>
+            {
+                var invalidStore = new LocalStateStore(stateRoot);
+                GC.KeepAlive(invalidStore);
+            },
+            "被篡改的本地状态事件通过校验");
+    });
+});
+
+Run("REG-STATE-004 崩溃遗留 pending 文件不伪装成已提交事件", () =>
+{
+    WithTemporaryStateRoot(stateRoot =>
+    {
+        var store = new LocalStateStore(stateRoot);
+        store.Append(new LocalStateEvent(
+            "identity_enabled_changed",
+            "alice-finance",
+            Enabled: false));
+        File.WriteAllText(
+            Path.Combine(stateRoot, ".pending-crash.tmp"),
+            "{\"partial\":",
+            new UTF8Encoding(false));
+
+        var reloaded = new LocalStateStore(stateRoot);
+        AssertEqual(1, reloaded.ReadEvents().Count, "pending 文件被当成正式状态事件");
+        AssertEqual(store.FinalHash, reloaded.FinalHash, "pending 文件改变了最终哈希");
+    });
+});
+
+Run("REG-STATE-005 摄取 Checkpoint 跨重启保持幂等和删除状态", () =>
+{
+    WithTemporaryStateRoot(stateRoot =>
+    WithTemporaryIngestionRoot(root =>
+    {
+        var sourcePath = Path.Combine(root, "persistent.txt");
+        File.WriteAllText(sourcePath, "持久摄取唯一内容", new UTF8Encoding(false));
+        var firstStore = new LocalStateStore(stateRoot);
+        var firstRepository = DocumentRepository.LoadApprovedSnapshot(dataPath, firstStore);
+        var firstIngestion = CreateIngestion(firstRepository, root, ["employees"], firstStore);
+        firstIngestion.Synchronize();
+
+        var reloadedStore = new LocalStateStore(stateRoot);
+        var reloadedRepository = DocumentRepository.LoadApprovedSnapshot(dataPath, reloadedStore);
+        var reloadedIngestion = CreateIngestion(
+            reloadedRepository,
+            root,
+            ["employees"],
+            reloadedStore);
+        var unchanged = reloadedIngestion.Synchronize();
+        AssertEqual(1, unchanged.Unchanged, "重启后未复用摄取 Checkpoint");
+
+        File.Delete(sourcePath);
+        AssertEqual(1, reloadedIngestion.Synchronize().Removed, "重启后的源删除未传播");
+        var finalStore = new LocalStateStore(stateRoot);
+        var finalRepository = DocumentRepository.LoadApprovedSnapshot(dataPath, finalStore);
+        var finalIngestion = CreateIngestion(finalRepository, root, ["employees"], finalStore);
+        finalIngestion.Synchronize();
+        AssertFalse(finalRepository.Documents.Any(document =>
+            document.SourcePath.EndsWith("persistent.txt", StringComparison.Ordinal)),
+            "再次重启后已删除摄取文档复活");
+    }));
+});
+
 var goldenDatasetPath = ResolveGoldenDatasetPath();
 var approvedManifestForEval = Path.Combine(AppContext.BaseDirectory, "Data", "approved-source.json");
 foreach (var (id, name, test) in GoldenDatasetContractRegression.BuildCases(
@@ -1137,7 +1252,7 @@ if (failures.Count > 0)
     return 1;
 }
 
-const int ExpectedRegressionCount = 80;
+const int ExpectedRegressionCount = 85;
 Console.WriteLine($"REGRESSION_TESTS=PASS count={ExpectedRegressionCount}");
 WriteFullGateFSummary(
     commitSha: TryReadGitCommit(),
@@ -1484,7 +1599,8 @@ static void WithTemporaryIngestionRoot(Action<string> test)
 static LocalFileIngestionService CreateIngestion(
     DocumentRepository repository,
     string root,
-    string[] allowedGroups) =>
+    string[] allowedGroups,
+    LocalStateStore? stateStore = null) =>
     new(
         repository,
         new LocalFileIngestionOptions(
@@ -1492,7 +1608,32 @@ static LocalFileIngestionService CreateIngestion(
             "local-test",
             "local-test-owner",
             "synthetic",
-            allowedGroups));
+            allowedGroups),
+        stateStore);
+
+static void WithTemporaryStateRoot(Action<string> test)
+{
+    var stateRoot = Path.Combine(
+        Path.GetTempPath(),
+        "enterprise-ai-state-regression",
+        Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(stateRoot);
+    try
+    {
+        test(stateRoot);
+    }
+    finally
+    {
+        var expectedParent = Path.GetFullPath(Path.Combine(
+            Path.GetTempPath(),
+            "enterprise-ai-state-regression")) + Path.DirectorySeparatorChar;
+        var resolvedRoot = Path.GetFullPath(stateRoot);
+        if (resolvedRoot.StartsWith(expectedParent, StringComparison.OrdinalIgnoreCase))
+        {
+            Directory.Delete(resolvedRoot, recursive: true);
+        }
+    }
+}
 
 static SearchTraceRecord CreateTraceRecord(int index)
 {

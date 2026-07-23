@@ -16,7 +16,8 @@ public static class PocApplication
         string[] args,
         DocumentRepository? repository = null,
         string? environmentName = null,
-        ISearchTraceSink? traceSink = null)
+        ISearchTraceSink? traceSink = null,
+        LocalStateStore? stateStore = null)
     {
         var options = string.IsNullOrWhiteSpace(environmentName)
             ? new WebApplicationOptions { Args = args }
@@ -43,9 +44,19 @@ public static class PocApplication
             jsonOptions.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
             jsonOptions.SerializerOptions.UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow;
         });
-        builder.Services.AddSingleton<PocIdentityDirectory>();
+        var configuredStatePath = builder.Configuration["GateF:LocalState:Path"];
+        var localStateStore = stateStore ??
+            (!string.IsNullOrWhiteSpace(configuredStatePath)
+                ? new LocalStateStore(configuredStatePath)
+                : null);
+        if (localStateStore is not null)
+        {
+            builder.Services.AddSingleton(localStateStore);
+        }
+        builder.Services.AddSingleton(new PocIdentityDirectory(localStateStore));
         var documentRepository = repository ?? DocumentRepository.LoadApprovedSnapshot(
-            Path.Combine(builder.Environment.ContentRootPath, "Data", "approved-source.json"));
+            Path.Combine(builder.Environment.ContentRootPath, "Data", "approved-source.json"),
+            localStateStore);
         builder.Services.AddSingleton(documentRepository);
         var ingestionRoot = builder.Configuration["GateF:LocalIngestion:RootPath"];
         if (!string.IsNullOrWhiteSpace(ingestionRoot))
@@ -64,7 +75,8 @@ public static class PocApplication
                     builder.Configuration["GateF:LocalIngestion:SourceId"] ?? string.Empty,
                     builder.Configuration["GateF:LocalIngestion:Owner"] ?? string.Empty,
                     builder.Configuration["GateF:LocalIngestion:Classification"] ?? string.Empty,
-                    allowedGroups));
+                    allowedGroups),
+                localStateStore);
             ingestion.Synchronize();
             builder.Services.AddSingleton(ingestion);
         }

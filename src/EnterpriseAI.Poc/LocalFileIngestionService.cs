@@ -15,14 +15,21 @@ public sealed class LocalFileIngestionService
     private readonly object _sync = new();
     private readonly DocumentRepository _repository;
     private readonly LocalFileIngestionOptions _options;
+    private readonly LocalStateStore? _stateStore;
     private Dictionary<string, IngestedFileState> _published = new(StringComparer.OrdinalIgnoreCase);
 
     public LocalFileIngestionService(
         DocumentRepository repository,
-        LocalFileIngestionOptions options)
+        LocalFileIngestionOptions options,
+        LocalStateStore? stateStore = null)
     {
         _repository = repository ?? throw new ArgumentNullException(nameof(repository));
         _options = ValidateOptions(options);
+        _stateStore = stateStore;
+        if (stateStore is not null)
+        {
+            ReplayCheckpoint(stateStore.ReadEvents());
+        }
     }
 
     public LocalFileIngestionResult Synchronize()
@@ -102,8 +109,9 @@ public sealed class LocalFileIngestionService
                 .ToArray();
 
             _repository.ApplyIngestionBatch(
-                candidates.Values.Select(candidate => candidate.Document).ToArray(),
+                candidates.Values.Select(candidate => candidate.Document!).ToArray(),
                 removedIds);
+            PersistCheckpointChanges(candidates, quarantine);
             _published = candidates;
 
             return new LocalFileIngestionResult(
@@ -113,7 +121,8 @@ public sealed class LocalFileIngestionService
                 removedIds.Length,
                 ignored,
                 quarantine,
-                _repository.Revision);
+                _repository.Revision,
+                _stateStore?.FinalHash ?? LocalStateStore.GenesisHash);
         }
     }
 
@@ -256,10 +265,95 @@ public sealed class LocalFileIngestionService
     private static string ComputeSha256(byte[] bytes) =>
         Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
 
+    private void ReplayCheckpoint(IEnumerable<LocalStateEnvelope> events)
+    {
+        foreach (var envelope in events)
+        {
+            var stateEvent = envelope.Event;
+            if (!string.Equals(stateEvent.SourceId, _options.SourceId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+            if (stateEvent.EventType == "ingestion_file_upserted")
+            {
+                var relativePath = stateEvent.RelativePath
+                    ?? throw new InvalidDataException("摄取 Checkpoint 缺少相对路径。");
+                var contentHash = stateEvent.ContentSha256
+                    ?? throw new InvalidDataException("摄取 Checkpoint 缺少内容哈希。");
+                _published[relativePath] = new IngestedFileState(
+                    stateEvent.TargetId,
+                    contentHash,
+                    Document: null);
+            }
+            else if (stateEvent.EventType is "ingestion_file_removed" or "ingestion_file_quarantined")
+            {
+                if (stateEvent.RelativePath is null)
+                {
+                    throw new InvalidDataException("摄取删除/隔离事件缺少相对路径。");
+                }
+                _published.Remove(stateEvent.RelativePath);
+            }
+        }
+    }
+
+    private void PersistCheckpointChanges(
+        IReadOnlyDictionary<string, IngestedFileState> candidates,
+        IReadOnlyCollection<IngestionQuarantineItem> quarantine)
+    {
+        if (_stateStore is null)
+        {
+            return;
+        }
+
+        foreach (var pair in candidates.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+        {
+            if (_published.TryGetValue(pair.Key, out var previous) &&
+                string.Equals(
+                    previous.ContentSha256,
+                    pair.Value.ContentSha256,
+                    StringComparison.Ordinal))
+            {
+                continue;
+            }
+            _stateStore.Append(new LocalStateEvent(
+                "ingestion_file_upserted",
+                pair.Value.DocumentId,
+                _options.SourceId,
+                RelativePath: pair.Key,
+                ContentSha256: pair.Value.ContentSha256));
+        }
+
+        var quarantineByPath = quarantine.ToDictionary(
+            item => item.RelativePath,
+            StringComparer.OrdinalIgnoreCase);
+        foreach (var previous in _published
+            .Where(pair => !candidates.ContainsKey(pair.Key))
+            .OrderBy(pair => pair.Key, StringComparer.Ordinal))
+        {
+            if (quarantineByPath.TryGetValue(previous.Key, out var item))
+            {
+                _stateStore.Append(new LocalStateEvent(
+                    "ingestion_file_quarantined",
+                    previous.Value.DocumentId,
+                    _options.SourceId,
+                    RelativePath: previous.Key,
+                    ReasonCode: item.ReasonCode));
+            }
+            else
+            {
+                _stateStore.Append(new LocalStateEvent(
+                    "ingestion_file_removed",
+                    previous.Value.DocumentId,
+                    _options.SourceId,
+                    RelativePath: previous.Key));
+            }
+        }
+    }
+
     private sealed record IngestedFileState(
         string DocumentId,
         string ContentSha256,
-        DocumentRecord Document);
+        DocumentRecord? Document);
 
     private sealed class FileTooLargeException : Exception
     {

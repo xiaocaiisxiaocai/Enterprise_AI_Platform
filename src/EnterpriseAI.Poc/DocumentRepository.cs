@@ -20,12 +20,14 @@ public sealed class DocumentRepository
 
     private readonly object _sync = new();
     private readonly Dictionary<string, ManagedDocument> _documents;
+    private readonly LocalStateStore? _stateStore;
     private long _revision;
 
     private DocumentRepository(
         IReadOnlyList<DocumentRecord> documents,
         string sourceId,
-        string manifestSha256)
+        string manifestSha256,
+        LocalStateStore? stateStore)
     {
         _documents = documents.ToDictionary(
             document => document.Id,
@@ -36,6 +38,11 @@ public sealed class DocumentRepository
             StringComparer.OrdinalIgnoreCase);
         SourceId = sourceId;
         ManifestSha256 = manifestSha256;
+        _stateStore = stateStore;
+        if (stateStore is not null)
+        {
+            Replay(stateStore.ReadEvents());
+        }
     }
 
     public IReadOnlyList<DocumentRecord> Documents
@@ -114,6 +121,10 @@ public sealed class DocumentRepository
         {
             var entry = GetMutableDocument(documentId);
             EnsureNotDeleted(entry);
+            _stateStore?.Append(new LocalStateEvent(
+                "document_acl_replaced",
+                entry.Document.Id,
+                Groups: normalizedGroups));
             _documents[documentId] = entry with
             {
                 Document = entry.Document with { AllowedGroups = normalizedGroups }
@@ -128,6 +139,7 @@ public sealed class DocumentRepository
         {
             var entry = GetMutableDocument(documentId);
             EnsureNotDeleted(entry);
+            _stateStore?.Append(new LocalStateEvent("document_withdrawn", entry.Document.Id));
             _documents[documentId] = entry with
             {
                 Status = KnowledgeLifecycleStatus.Withdrawn
@@ -142,6 +154,7 @@ public sealed class DocumentRepository
         {
             var entry = GetMutableDocument(documentId);
             EnsureNotDeleted(entry);
+            _stateStore?.Append(new LocalStateEvent("document_published", entry.Document.Id));
             _documents[documentId] = entry with
             {
                 Status = KnowledgeLifecycleStatus.Published,
@@ -157,6 +170,10 @@ public sealed class DocumentRepository
         {
             var entry = GetMutableDocument(documentId);
             EnsureNotDeleted(entry);
+            _stateStore?.Append(new LocalStateEvent(
+                expiresAtUtc is null ? "document_expiration_cleared" : "document_expiration_set",
+                entry.Document.Id,
+                ExpiresAtUtc: expiresAtUtc));
             _documents[documentId] = entry with { ExpiresAtUtc = expiresAtUtc };
             AdvanceRevision();
         }
@@ -168,6 +185,7 @@ public sealed class DocumentRepository
         {
             var entry = GetMutableDocument(documentId);
             EnsureNotDeleted(entry);
+            _stateStore?.Append(new LocalStateEvent("document_deleted", entry.Document.Id));
             _documents[documentId] = entry with
             {
                 Status = KnowledgeLifecycleStatus.Deleted,
@@ -235,7 +253,9 @@ public sealed class DocumentRepository
         }
     }
 
-    public static DocumentRepository LoadApprovedSnapshot(string manifestPath)
+    public static DocumentRepository LoadApprovedSnapshot(
+        string manifestPath,
+        LocalStateStore? stateStore = null)
     {
         if (!File.Exists(manifestPath))
         {
@@ -319,7 +339,11 @@ public sealed class DocumentRepository
                 entry.SearchTerms));
         }
 
-        return new DocumentRepository(documents, manifest.SourceId, ComputeSha256(manifestBytes));
+        return new DocumentRepository(
+            documents,
+            manifest.SourceId,
+            ComputeSha256(manifestBytes),
+            stateStore);
     }
 
     // 批准清单必须跨 Windows/Linux 保持同一语义，统一拒绝仅大小写不同的来源路径。
@@ -488,6 +512,72 @@ public sealed class DocumentRepository
 
     private string GetRevisionSourceId(long revision) =>
         revision == 0 ? SourceId : $"{SourceId}:local-revision:{revision}";
+
+    private void Replay(IEnumerable<LocalStateEnvelope> events)
+    {
+        foreach (var envelope in events)
+        {
+            var stateEvent = envelope.Event;
+            if (!stateEvent.EventType.StartsWith("document_", StringComparison.Ordinal))
+            {
+                continue;
+            }
+            if (!_documents.TryGetValue(stateEvent.TargetId, out var entry))
+            {
+                throw new InvalidDataException("知识生命周期事件引用未知批准文档。");
+            }
+
+            switch (stateEvent.EventType)
+            {
+                case "document_acl_replaced":
+                    entry = entry with
+                    {
+                        Document = entry.Document with
+                        {
+                            AllowedGroups = stateEvent.Groups
+                                ?? throw new InvalidDataException("文档 ACL 事件缺少 Groups。")
+                        }
+                    };
+                    break;
+                case "document_withdrawn":
+                    entry = entry with { Status = KnowledgeLifecycleStatus.Withdrawn };
+                    break;
+                case "document_published":
+                    if (entry.Status == KnowledgeLifecycleStatus.Deleted)
+                    {
+                        throw new InvalidDataException("状态账本尝试重新发布已删除文档。");
+                    }
+                    entry = entry with
+                    {
+                        Status = KnowledgeLifecycleStatus.Published,
+                        ExpiresAtUtc = null
+                    };
+                    break;
+                case "document_expiration_set":
+                    entry = entry with
+                    {
+                        ExpiresAtUtc = stateEvent.ExpiresAtUtc
+                            ?? throw new InvalidDataException("文档过期事件缺少时间。")
+                    };
+                    break;
+                case "document_expiration_cleared":
+                    entry = entry with { ExpiresAtUtc = null };
+                    break;
+                case "document_deleted":
+                    entry = entry with
+                    {
+                        Status = KnowledgeLifecycleStatus.Deleted,
+                        ExpiresAtUtc = null
+                    };
+                    break;
+                default:
+                    throw new InvalidDataException("本地状态账本包含未知知识事件。");
+            }
+
+            _documents[stateEvent.TargetId] = entry;
+            _revision = checked(_revision + 1);
+        }
+    }
 
     private static void ValidateIngestedDocument(DocumentRecord document)
     {

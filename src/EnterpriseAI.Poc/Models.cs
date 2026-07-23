@@ -71,7 +71,8 @@ public sealed record LocalFileIngestionResult(
     int Removed,
     int Ignored,
     IReadOnlyList<IngestionQuarantineItem> Quarantined,
-    long RepositoryRevision);
+    long RepositoryRevision,
+    string CheckpointHash);
 
 public sealed class PocIdentity
 {
