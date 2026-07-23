@@ -44,8 +44,30 @@ public static class PocApplication
             jsonOptions.SerializerOptions.UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow;
         });
         builder.Services.AddSingleton<PocIdentityDirectory>();
-        builder.Services.AddSingleton(repository ?? DocumentRepository.LoadApprovedSnapshot(
-            Path.Combine(builder.Environment.ContentRootPath, "Data", "approved-source.json")));
+        var documentRepository = repository ?? DocumentRepository.LoadApprovedSnapshot(
+            Path.Combine(builder.Environment.ContentRootPath, "Data", "approved-source.json"));
+        builder.Services.AddSingleton(documentRepository);
+        var ingestionRoot = builder.Configuration["GateF:LocalIngestion:RootPath"];
+        if (!string.IsNullOrWhiteSpace(ingestionRoot))
+        {
+            var allowedGroups = builder.Configuration
+                .GetSection("GateF:LocalIngestion:AllowedGroups")
+                .GetChildren()
+                .Select(child => child.Value)
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Cast<string>()
+                .ToArray();
+            var ingestion = new LocalFileIngestionService(
+                documentRepository,
+                new LocalFileIngestionOptions(
+                    ingestionRoot,
+                    builder.Configuration["GateF:LocalIngestion:SourceId"] ?? string.Empty,
+                    builder.Configuration["GateF:LocalIngestion:Owner"] ?? string.Empty,
+                    builder.Configuration["GateF:LocalIngestion:Classification"] ?? string.Empty,
+                    allowedGroups));
+            ingestion.Synchronize();
+            builder.Services.AddSingleton(ingestion);
+        }
         builder.Services.AddSingleton(traceSink ?? new HashChainedJsonLineTraceSink(
             Path.Combine(builder.Environment.ContentRootPath, ".gate-f", "search-traces.jsonl")));
         builder.Services.AddSingleton<PermissionAwareSearchService>();

@@ -111,7 +111,7 @@ stateDiagram-v2
 
 ### 4.1 Gate F 本地证据边界
 
-当前 PoC 用 `Data\approved-source.json` 登记合成来源的固定 Tenant、Owner、分类、版本、相对路径、Group ACL 和 SHA-256。加载器在检索前验证清单与文件一致性，并拒绝路径越界、重解析点、哈希不符或 ACL 缺失。这只证明清单契约和失败关闭行为可重复执行；清单中的 Owner 是测试占位身份，不等于真实 Data Owner 已授权，也未实现 Connector、撤权传播、恶意文件扫描、生命周期事件或正式发布审批。
+当前 PoC 用 `Data\approved-source.json` 登记合成来源的固定 Tenant、Owner、分类、版本、相对路径、Group ACL 和 SHA-256。加载器在检索前验证清单与文件一致性，并拒绝路径越界、重解析点、哈希不符或 ACL 缺失。Gate F.1 另以进程内投影验证 Group/ACL 变更、撤回、过期和删除；最小本地摄取切片验证 Markdown/TXT 内容哈希幂等、无效文件隔离和源删除撤出。它们只证明本地确定性契约；Owner 是测试占位身份，状态没有持久化事件历史，也未实现真实 Connector ACL、恶意文件扫描、Legal Hold、正式审核或发布审批。
 
 ## 5. ACL、隐私与保留
 

@@ -53,6 +53,26 @@ public enum KnowledgeLifecycleStatus
     Deleted
 }
 
+public sealed record LocalFileIngestionOptions(
+    string RootPath,
+    string SourceId,
+    string Owner,
+    string Classification,
+    string[] AllowedGroups);
+
+public sealed record IngestionQuarantineItem(
+    string RelativePath,
+    string ReasonCode);
+
+public sealed record LocalFileIngestionResult(
+    int Added,
+    int Updated,
+    int Unchanged,
+    int Removed,
+    int Ignored,
+    IReadOnlyList<IngestionQuarantineItem> Quarantined,
+    long RepositoryRevision);
+
 public sealed class PocIdentity
 {
     public PocIdentity(string principalId, string tenantId, IEnumerable<string> groups)

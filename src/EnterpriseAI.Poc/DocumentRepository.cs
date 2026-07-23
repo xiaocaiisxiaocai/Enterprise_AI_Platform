@@ -177,6 +177,64 @@ public sealed class DocumentRepository
         }
     }
 
+    public void ApplyIngestionBatch(
+        IReadOnlyCollection<DocumentRecord> documents,
+        IReadOnlyCollection<string> removedDocumentIds)
+    {
+        ArgumentNullException.ThrowIfNull(documents);
+        ArgumentNullException.ThrowIfNull(removedDocumentIds);
+        if (documents.Select(document => document.Id)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count() != documents.Count)
+        {
+            throw new InvalidDataException("本地摄取批次包含重复文档标识。");
+        }
+        foreach (var document in documents)
+        {
+            ValidateIngestedDocument(document);
+        }
+        var incomingIds = documents
+            .Select(document => document.Id)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (removedDocumentIds.Any(incomingIds.Contains))
+        {
+            throw new InvalidDataException("本地摄取批次不能同时更新和删除同一文档。");
+        }
+
+        lock (_sync)
+        {
+            var changed = false;
+            foreach (var document in documents)
+            {
+                var replacement = new ManagedDocument(
+                    document,
+                    KnowledgeLifecycleStatus.Published,
+                    ExpiresAtUtc: null);
+                if (!_documents.TryGetValue(document.Id, out var existing) ||
+                    !ManagedDocumentsEqual(existing, replacement))
+                {
+                    _documents[document.Id] = replacement;
+                    changed = true;
+                }
+            }
+
+            foreach (var documentId in removedDocumentIds.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                if (_documents.TryGetValue(documentId, out var existing) &&
+                    existing.Document.SourcePath.StartsWith("local/", StringComparison.Ordinal))
+                {
+                    _documents.Remove(documentId);
+                    changed = true;
+                }
+            }
+
+            if (changed)
+            {
+                AdvanceRevision();
+            }
+        }
+    }
+
     public static DocumentRepository LoadApprovedSnapshot(string manifestPath)
     {
         if (!File.Exists(manifestPath))
@@ -430,6 +488,43 @@ public sealed class DocumentRepository
 
     private string GetRevisionSourceId(long revision) =>
         revision == 0 ? SourceId : $"{SourceId}:local-revision:{revision}";
+
+    private static void ValidateIngestedDocument(DocumentRecord document)
+    {
+        if (string.IsNullOrWhiteSpace(document.Id) ||
+            !string.Equals(
+                document.TenantId,
+                PocIdentityDirectory.EnterpriseTenantId,
+                StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(document.Version) ||
+            string.IsNullOrWhiteSpace(document.Title) ||
+            string.IsNullOrWhiteSpace(document.Section) ||
+            !document.SourcePath.StartsWith("local/", StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(document.Content) ||
+            document.AllowedGroups.Length == 0 ||
+            document.AllowedGroups.Any(string.IsNullOrWhiteSpace) ||
+            document.SearchTerms.Length == 0)
+        {
+            throw new InvalidDataException("本地摄取文档缺少有效版本、权限或来源元数据。");
+        }
+    }
+
+    private static bool ManagedDocumentsEqual(ManagedDocument left, ManagedDocument right) =>
+        left.Status == right.Status &&
+        left.ExpiresAtUtc == right.ExpiresAtUtc &&
+        left.Document.Id == right.Document.Id &&
+        left.Document.TenantId == right.Document.TenantId &&
+        left.Document.Version == right.Document.Version &&
+        left.Document.Title == right.Document.Title &&
+        left.Document.Section == right.Document.Section &&
+        left.Document.SourcePath == right.Document.SourcePath &&
+        left.Document.Content == right.Document.Content &&
+        left.Document.AllowedGroups.SequenceEqual(
+            right.Document.AllowedGroups,
+            StringComparer.OrdinalIgnoreCase) &&
+        left.Document.SearchTerms.SequenceEqual(
+            right.Document.SearchTerms,
+            StringComparer.OrdinalIgnoreCase);
 
     private sealed record ManagedDocument(
         DocumentRecord Document,

@@ -897,7 +897,223 @@ Run("REG-SRC-017 重复 Document ID 被拒绝", () =>
             ExpectThrows<InvalidDataException>(
                 () => DocumentRepository.LoadApprovedSnapshot(manifestPath),
                 "重复 Document ID 被接受");
-        });
+    });
+});
+
+Run("REG-ING-001 Markdown/TXT 被摄取且其他格式被忽略", () =>
+{
+    WithTemporaryIngestionRoot(root =>
+    {
+        File.WriteAllText(Path.Combine(root, "policy.md"), "# 财务差旅\n差旅标准唯一内容", new UTF8Encoding(false));
+        File.WriteAllText(Path.Combine(root, "notice.txt"), "公共通知唯一内容", new UTF8Encoding(false));
+        File.WriteAllText(Path.Combine(root, "ignored.json"), "{}", new UTF8Encoding(false));
+        var localRepository = DocumentRepository.LoadApprovedSnapshot(dataPath);
+        var ingestion = CreateIngestion(localRepository, root, ["finance"]);
+
+        var result = ingestion.Synchronize();
+        AssertEqual(2, result.Added, "未摄取两个支持文件");
+        AssertEqual(1, result.Ignored, "未忽略非支持格式");
+        AssertEqual(0, result.Quarantined.Count, "有效文件被隔离");
+        var localSearch = new PermissionAwareSearchService(localRepository, new InMemorySearchTraceSink());
+        AssertEqual("answered", localSearch.Query(Resolve("alice-finance"), "差旅标准唯一内容").Status, "Markdown 内容不可检索");
+        AssertEqual("refused", localSearch.Query(Resolve("bob-hr"), "差旅标准唯一内容").Status, "摄取 ACL 未生效");
+    });
+});
+
+Run("REG-ING-002 重复同步保持幂等且 revision 不增长", () =>
+{
+    WithTemporaryIngestionRoot(root =>
+    {
+        File.WriteAllText(Path.Combine(root, "stable.txt"), "稳定内容", new UTF8Encoding(false));
+        var localRepository = DocumentRepository.LoadApprovedSnapshot(dataPath);
+        var ingestion = CreateIngestion(localRepository, root, ["employees"]);
+        var first = ingestion.Synchronize();
+        var second = ingestion.Synchronize();
+
+        AssertEqual(1, first.Added, "首次同步未新增文件");
+        AssertEqual(1, second.Unchanged, "重复同步未识别未变化文件");
+        AssertEqual(0, second.Added, "重复同步产生重复新增");
+        AssertEqual(first.RepositoryRevision, second.RepositoryRevision, "幂等同步错误提升 revision");
+    });
+});
+
+Run("REG-ING-003 内容更新产生新版本并替换旧投影", () =>
+{
+    WithTemporaryIngestionRoot(root =>
+    {
+        var path = Path.Combine(root, "changing.txt");
+        File.WriteAllText(path, "旧版唯一内容", new UTF8Encoding(false));
+        var localRepository = DocumentRepository.LoadApprovedSnapshot(dataPath);
+        var ingestion = CreateIngestion(localRepository, root, ["employees"]);
+        ingestion.Synchronize();
+        var oldVersion = localRepository.Documents.Single(document =>
+            document.SourcePath.EndsWith("changing.txt", StringComparison.Ordinal)).Version;
+
+        File.WriteAllText(path, "新版唯一内容", new UTF8Encoding(false));
+        var result = ingestion.Synchronize();
+        var updated = localRepository.Documents.Single(document =>
+            document.SourcePath.EndsWith("changing.txt", StringComparison.Ordinal));
+        AssertEqual(1, result.Updated, "内容变化未识别为更新");
+        AssertFalse(oldVersion == updated.Version, "内容变化未生成新版本");
+        var localSearch = new PermissionAwareSearchService(localRepository, new InMemorySearchTraceSink());
+        AssertEqual("answered", localSearch.Query(Resolve("alice-finance"), "新版唯一内容").Status, "新内容不可检索");
+        AssertEqual("refused", localSearch.Query(Resolve("alice-finance"), "旧版唯一内容").Status, "旧内容仍在当前投影");
+    });
+});
+
+Run("REG-ING-004 源文件删除传播到可检索投影", () =>
+{
+    WithTemporaryIngestionRoot(root =>
+    {
+        var path = Path.Combine(root, "removed.txt");
+        File.WriteAllText(path, "即将删除唯一内容", new UTF8Encoding(false));
+        var localRepository = DocumentRepository.LoadApprovedSnapshot(dataPath);
+        var ingestion = CreateIngestion(localRepository, root, ["employees"]);
+        ingestion.Synchronize();
+        File.Delete(path);
+
+        var result = ingestion.Synchronize();
+        AssertEqual(1, result.Removed, "源删除未传播");
+        var localSearch = new PermissionAwareSearchService(localRepository, new InMemorySearchTraceSink());
+        AssertEqual("refused", localSearch.Query(Resolve("alice-finance"), "即将删除唯一内容").Status, "删除内容仍可检索");
+    });
+});
+
+Run("REG-ING-005 无效 UTF-8 被隔离且不发布", () =>
+{
+    WithTemporaryIngestionRoot(root =>
+    {
+        File.WriteAllBytes(Path.Combine(root, "invalid.md"), [0xc3, 0x28]);
+        var localRepository = DocumentRepository.LoadApprovedSnapshot(dataPath);
+        var result = CreateIngestion(localRepository, root, ["employees"]).Synchronize();
+
+        AssertEqual(1, result.Quarantined.Count, "无效 UTF-8 未进入隔离");
+        AssertEqual("invalid_utf8", result.Quarantined[0].ReasonCode, "隔离原因错误");
+        AssertFalse(localRepository.Documents.Any(document =>
+            document.SourcePath.Contains("invalid.md", StringComparison.Ordinal)), "无效文件被发布");
+    });
+});
+
+Run("REG-ING-006 已发布文件损坏后撤出当前投影", () =>
+{
+    WithTemporaryIngestionRoot(root =>
+    {
+        var path = Path.Combine(root, "corrupted.txt");
+        File.WriteAllText(path, "损坏前唯一内容", new UTF8Encoding(false));
+        var localRepository = DocumentRepository.LoadApprovedSnapshot(dataPath);
+        var ingestion = CreateIngestion(localRepository, root, ["employees"]);
+        ingestion.Synchronize();
+        File.WriteAllBytes(path, [0xc3, 0x28]);
+
+        var result = ingestion.Synchronize();
+        AssertEqual(1, result.Removed, "损坏更新未撤出旧投影");
+        AssertEqual(1, result.Quarantined.Count, "损坏更新未进入隔离");
+        var localSearch = new PermissionAwareSearchService(localRepository, new InMemorySearchTraceSink());
+        AssertEqual("refused", localSearch.Query(Resolve("alice-finance"), "损坏前唯一内容").Status, "损坏后旧版本仍可检索");
+    });
+});
+
+Run("REG-ING-007 空文件和超限文件被隔离", () =>
+{
+    WithTemporaryIngestionRoot(root =>
+    {
+        File.WriteAllText(Path.Combine(root, "empty.txt"), string.Empty, new UTF8Encoding(false));
+        File.WriteAllBytes(
+            Path.Combine(root, "large.md"),
+            Enumerable.Repeat((byte)'A', DocumentRepository.MaxSourceFileBytes + 1).ToArray());
+        var localRepository = DocumentRepository.LoadApprovedSnapshot(dataPath);
+        var result = CreateIngestion(localRepository, root, ["employees"]).Synchronize();
+
+        AssertEqual(2, result.Quarantined.Count, "空文件或超限文件未全部隔离");
+        AssertTrue(result.Quarantined.Any(item => item.ReasonCode == "empty_content"), "缺少空文件隔离原因");
+        AssertTrue(result.Quarantined.Any(item => item.ReasonCode == "file_too_large"), "缺少超限隔离原因");
+    });
+});
+
+Run("REG-ING-008 缺少 Owner 的摄取配置被拒绝", () =>
+{
+    WithTemporaryIngestionRoot(root =>
+    {
+        var localRepository = DocumentRepository.LoadApprovedSnapshot(dataPath);
+        ExpectThrows<InvalidDataException>(
+            () =>
+            {
+                var invalidService = new LocalFileIngestionService(
+                    localRepository,
+                    new LocalFileIngestionOptions(
+                        root,
+                        "local-test",
+                        " ",
+                        "synthetic",
+                        ["employees"]));
+                GC.KeepAlive(invalidService);
+            },
+            "缺少 Owner 的摄取配置被接受");
+    });
+});
+
+Run("REG-ING-009 显式启动配置执行一次本地同步", () =>
+{
+    WithTemporaryIngestionRoot(root =>
+    {
+        File.WriteAllText(Path.Combine(root, "startup.txt"), "启动同步唯一内容", new UTF8Encoding(false));
+        var localRepository = DocumentRepository.LoadApprovedSnapshot(dataPath);
+        var args = new[]
+        {
+            $"--GateF:LocalIngestion:RootPath={root}",
+            "--GateF:LocalIngestion:SourceId=startup-test",
+            "--GateF:LocalIngestion:Owner=startup-owner",
+            "--GateF:LocalIngestion:Classification=synthetic",
+            "--GateF:LocalIngestion:AllowedGroups:0=employees"
+        };
+        var application = PocApplication.Build(
+            args,
+            localRepository,
+            "Development",
+            new InMemorySearchTraceSink());
+        try
+        {
+            AssertTrue(
+                localRepository.Documents.Any(document =>
+                    document.Content.Contains("启动同步唯一内容", StringComparison.Ordinal)),
+                "应用启动未执行本地文件同步");
+            AssertTrue(
+                application.Services.GetService<LocalFileIngestionService>() is not null,
+                "摄取服务未注册到容器");
+        }
+        finally
+        {
+            application.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
+    });
+});
+
+Run("REG-ING-010 无效摄取批次不会部分发布", () =>
+{
+    var localRepository = DocumentRepository.LoadApprovedSnapshot(dataPath);
+    var revisionBefore = localRepository.Revision;
+    var valid = new DocumentRecord(
+        "local-valid",
+        PocIdentityDirectory.EnterpriseTenantId,
+        "sha256:" + new string('a', 64),
+        "有效候选",
+        "全文",
+        "local/atomic/valid.txt",
+        "有效候选正文",
+        ["employees"],
+        ["有效候选"]);
+    var invalid = valid with
+    {
+        Id = "local-invalid",
+        SourcePath = "local/atomic/invalid.txt",
+        AllowedGroups = []
+    };
+
+    ExpectThrows<InvalidDataException>(
+        () => localRepository.ApplyIngestionBatch([valid, invalid], []),
+        "无效摄取批次被接受");
+    AssertEqual(revisionBefore, localRepository.Revision, "失败批次提升了 repository revision");
+    AssertFalse(localRepository.Documents.Any(document => document.Id == valid.Id), "失败批次部分发布了有效候选");
 });
 
 var goldenDatasetPath = ResolveGoldenDatasetPath();
@@ -921,7 +1137,7 @@ if (failures.Count > 0)
     return 1;
 }
 
-const int ExpectedRegressionCount = 70;
+const int ExpectedRegressionCount = 80;
 Console.WriteLine($"REGRESSION_TESTS=PASS count={ExpectedRegressionCount}");
 WriteFullGateFSummary(
     commitSha: TryReadGitCommit(),
@@ -1240,6 +1456,43 @@ static void WithTemporaryTraceFile(Action<string> test)
         }
     }
 }
+
+static void WithTemporaryIngestionRoot(Action<string> test)
+{
+    var ingestionRoot = Path.Combine(
+        Path.GetTempPath(),
+        "enterprise-ai-ingestion-regression",
+        Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(ingestionRoot);
+    try
+    {
+        test(ingestionRoot);
+    }
+    finally
+    {
+        var expectedParent = Path.GetFullPath(Path.Combine(
+            Path.GetTempPath(),
+            "enterprise-ai-ingestion-regression")) + Path.DirectorySeparatorChar;
+        var resolvedRoot = Path.GetFullPath(ingestionRoot);
+        if (resolvedRoot.StartsWith(expectedParent, StringComparison.OrdinalIgnoreCase))
+        {
+            Directory.Delete(resolvedRoot, recursive: true);
+        }
+    }
+}
+
+static LocalFileIngestionService CreateIngestion(
+    DocumentRepository repository,
+    string root,
+    string[] allowedGroups) =>
+    new(
+        repository,
+        new LocalFileIngestionOptions(
+            root,
+            "local-test",
+            "local-test-owner",
+            "synthetic",
+            allowedGroups));
 
 static SearchTraceRecord CreateTraceRecord(int index)
 {

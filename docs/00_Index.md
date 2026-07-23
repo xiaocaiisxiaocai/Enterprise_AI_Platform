@@ -61,7 +61,7 @@
 | 04 | [数据库模型设计](04_数据库模型设计.md) | PostgreSQL + pgvector、Schema、约束和生命周期 | Planned |
 | 05 | [API接口设计](05_API接口设计.md) | HTTP/OpenAPI、异步执行、错误和 MCP 契约 | Planned |
 | 06 | [Agent Runtime设计](06_Agent_Runtime设计.md) | 执行语义、版本快照、策略检查点和恢复 | Planned |
-| 07 | [Knowledge Platform设计](07_Knowledge_Platform设计.md) | 知识摄取、检索与证据链 | Planned |
+| 07 | [Knowledge Platform设计](07_Knowledge_Platform设计.md) | 知识摄取、检索与证据链 | PartiallyImplemented（仅本地 Markdown/TXT 切片） |
 | 08 | [Tool Platform与AI SDK设计](08_Tool_Platform_AI_SDK设计.md) | 工具注册、执行隔离与 SDK | Planned |
 | 09 | [Workflow与Human-in-the-Loop设计](09_Workflow_Human_In_Loop设计.md) | 长流程、审批与人工任务 | Planned |
 | 10 | [Governance与Security设计](10_Governance_Security设计.md) | 身份、策略、审计、安全和风险控制 | Planned |

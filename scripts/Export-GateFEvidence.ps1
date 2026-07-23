@@ -443,10 +443,10 @@ try {
         }
     })
     $regressionSummary = $regressionOutput | Where-Object {
-        $_.ToString() -match '^REGRESSION_TESTS=PASS count=70$'
+        $_.ToString() -match '^REGRESSION_TESTS=PASS count=80$'
     }
-    if ($testIds.Count -ne 70 -or $null -eq $regressionSummary) {
-        throw "回归输出与 70 条 Gate F/F.1 契约不一致。"
+    if ($testIds.Count -ne 80 -or $null -eq $regressionSummary) {
+        throw "回归输出与 80 条 Gate F/F.1/本地摄取契约不一致。"
     }
 
     $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
