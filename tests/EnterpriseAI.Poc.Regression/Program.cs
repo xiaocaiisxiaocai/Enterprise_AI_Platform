@@ -750,28 +750,14 @@ Run("REG-TRACE-013 Trace entryHash 被改写时检测", () =>
 
 Run("REG-SRC-016 大小写/规范化路径冲突被拒绝", () =>
 {
-    if (!OperatingSystem.IsWindows())
-    {
-        // 非 Windows 上大小写敏感，改用 ./ 与重复相对路径的等价冲突（已由 REG-SRC-012 覆盖）。
-        // 仍执行一次大小写无关的重复文档 ID 路径规范化探测：同一路径两种写法。
-        WithTemporaryMultiPathSnapshot(
-            fileContent: "批准内容",
-            relativePaths: ["fixtures/document.md", "fixtures\\document.md"],
-            allowedGroups: ["employees"],
-            approvedHash: ComputeSha256("批准内容"),
-            manifestPath => ExpectThrows<InvalidDataException>(
-                () => DocumentRepository.LoadApprovedSnapshot(manifestPath),
-                "路径分隔符规范化冲突被接受"));
-        return;
-    }
-
     WithTemporaryMultiPathSnapshot(
         fileContent: "批准内容",
-        relativePaths: ["fixtures/document.md", "Fixtures/Document.md"],
+        relativePaths: ["fixtures/document.md", "fixtures/DOCUMENT.md"],
         allowedGroups: ["employees"],
         approvedHash: ComputeSha256("批准内容"),
-        manifestPath => ExpectThrows<InvalidDataException>(
+        manifestPath => ExpectThrowsWithMessage<InvalidDataException>(
             () => DocumentRepository.LoadApprovedSnapshot(manifestPath),
+            "冲突的来源路径",
             "大小写路径冲突被接受"));
 });
 
@@ -941,6 +927,30 @@ static void ExpectThrows<TException>(Action action, string message)
     throw new InvalidOperationException(message);
 }
 
+static void ExpectThrowsWithMessage<TException>(
+    Action action,
+    string expectedMessagePart,
+    string message)
+    where TException : Exception
+{
+    try
+    {
+        action();
+    }
+    catch (TException exception)
+    {
+        if (exception.Message.Contains(expectedMessagePart, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            $"{message}：抛出了正确类型但原因错误：{exception.Message}");
+    }
+
+    throw new InvalidOperationException(message);
+}
+
 static void WithTemporarySnapshot(
     string fileContent,
     string relativePath,
@@ -1014,7 +1024,17 @@ static void WithTemporaryMultiPathBinarySnapshot(
         Guid.NewGuid().ToString("N"));
     var fixtureDirectory = Path.Combine(regressionRoot, "fixtures");
     Directory.CreateDirectory(fixtureDirectory);
-    File.WriteAllBytes(Path.Combine(fixtureDirectory, "document.md"), fileContent);
+    foreach (var relativePath in relativePaths)
+    {
+        var platformRelativePath = relativePath
+            .Replace('\\', Path.DirectorySeparatorChar)
+            .Replace('/', Path.DirectorySeparatorChar);
+        var sourcePath = Path.GetFullPath(Path.Combine(regressionRoot, platformRelativePath));
+        var sourceDirectory = Path.GetDirectoryName(sourcePath)
+            ?? throw new InvalidOperationException("测试来源路径缺少父目录。");
+        Directory.CreateDirectory(sourceDirectory);
+        File.WriteAllBytes(sourcePath, fileContent);
+    }
 
     var documents = relativePaths
         .Select((path, index) => new ApprovedSourceDocument(

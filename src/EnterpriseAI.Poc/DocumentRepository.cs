@@ -125,8 +125,8 @@ public sealed class DocumentRepository
         return new DocumentRepository(documents, manifest.SourceId, ComputeSha256(manifestBytes));
     }
 
-    private static StringComparer PathComparer =>
-        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+    // 批准清单必须跨 Windows/Linux 保持同一语义，统一拒绝仅大小写不同的来源路径。
+    private static StringComparer PathComparer => StringComparer.OrdinalIgnoreCase;
 
     private static void ValidateManifest(ApprovedSourceManifest manifest)
     {
@@ -217,7 +217,7 @@ public sealed class DocumentRepository
     {
         var relative = Path.GetRelativePath(rootPath, fullPath)
             .Replace('\\', '/');
-        return OperatingSystem.IsWindows() ? relative.ToLowerInvariant() : relative;
+        return relative.ToLowerInvariant();
     }
 
     private static void RejectReparsePoint(string path)
